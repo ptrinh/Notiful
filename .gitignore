@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+Notiful.app/
+Notiful.zip
+*.xcodeproj
+.DS_Store
