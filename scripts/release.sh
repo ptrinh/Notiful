@@ -8,11 +8,14 @@ VERSION="${1:-1.0.0}"
 TAG="v${VERSION}"
 ZIP="Notiful.zip"
 
-echo "==> Building Notiful.app (release)"
-./scripts/build-app.sh >/dev/null
+echo "==> Building + notarizing Notiful.app (release)"
+# NOTARIZE=1 makes build-app.sh notarize and staple the .app (needs a Developer ID identity and a
+# stored notarytool keychain profile). Set NOTARIZE=0 to skip (e.g. a self-signed test release).
+NOTARIZE="${NOTARIZE:-1}" ./scripts/build-app.sh
 
 echo "==> Zipping -> $ZIP"
 rm -f "$ZIP"
+# The .app is already stapled, so this distribution zip carries the notarization ticket offline.
 ditto -c -k --sequesterRsrc --keepParent Notiful.app "$ZIP"
 
 SHA=$(shasum -a 256 "$ZIP" | awk '{print $1}')

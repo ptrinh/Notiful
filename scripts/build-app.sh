@@ -52,24 +52,57 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 echo "==> Code signing (required for UNUserNotificationCenter + SMAppService)"
-# Prefer a STABLE self-signed identity so macOS TCC grants (Full Disk Access, Accessibility) survive
-# rebuilds — the signed app keeps the same designated requirement (identifier + cert hash) every
-# build. Falls back to ad-hoc if the identity isn't set up. Run scripts/make-signing-cert.sh once.
-SIGN_IDENTITY="Notiful Self-Signed"
+# Signing identity, in order of preference:
+#   1. Developer ID Application — signs with hardened runtime + secure timestamp so the app can be
+#      NOTARIZED and distributed without the --no-quarantine workaround.
+#   2. A STABLE self-signed identity — for local dev, so macOS TCC grants (Full Disk Access,
+#      Accessibility) survive rebuilds. Run scripts/make-signing-cert.sh once to set it up.
+#   3. Ad-hoc — last resort; FDA/Accessibility reset every rebuild and it can't be notarized.
+DEVID_IDENTITY="$(security find-identity -p codesigning -v 2>/dev/null \
+  | grep -o 'Developer ID Application: [^"]*' | head -1)"
+SELFSIGN_IDENTITY="Notiful Self-Signed"
 SIGN_KEYCHAIN="$HOME/Library/Keychains/notiful-codesign.keychain-db"
-if security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
-  SIGN_ID="$SIGN_IDENTITY"
+RUNTIME_OPTS=()
+if [ -n "$DEVID_IDENTITY" ]; then
+  SIGN_ID="$DEVID_IDENTITY"
+  RUNTIME_OPTS=(--options runtime --timestamp)   # required for notarization
+  echo "    using Developer ID: $DEVID_IDENTITY (hardened runtime + timestamp; notarizable)"
+elif security find-identity -p codesigning 2>/dev/null | grep -q "$SELFSIGN_IDENTITY"; then
+  SIGN_ID="$SELFSIGN_IDENTITY"
   [ -f "$SIGN_KEYCHAIN" ] && security unlock-keychain -p "" "$SIGN_KEYCHAIN" 2>/dev/null || true
-  echo "    using stable identity: $SIGN_IDENTITY (TCC grants persist across rebuilds)"
+  echo "    using stable self-signed identity (TCC grants persist across rebuilds; NOT notarizable)"
 else
   SIGN_ID="-"
-  echo "    no stable identity found — using ad-hoc (FDA/Accessibility will reset each rebuild)."
+  echo "    no signing identity found — using ad-hoc (FDA/Accessibility reset each rebuild)."
   echo "    run ./scripts/make-signing-cert.sh once to fix that."
 fi
-# Strip extended attributes first — stray xattrs (e.g. on the copied .icns) make codesign fail with
-# "resource fork ... detritus not allowed", silently leaving a wrong/incomplete signature.
-xattr -cr "$APP"
-codesign --force --deep --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+# The repo may live in an iCloud-synced folder (~/Documents), where the file-provider daemon
+# continuously re-stamps com.apple.FinderInfo onto the bundle root — racing codesign both at sign
+# time AND at `--strict` verify time. Stage the bundle in a temp dir OUTSIDE the synced tree so all
+# signing/notarizing runs on a copy nothing else touches, then copy the finished app back.
+FINAL_APP="$APP"
+STAGE_DIR="$(mktemp -d)"
+ditto "$APP" "$STAGE_DIR/Notiful.app"
+APP="$STAGE_DIR/Notiful.app"
+
+# Strip extended attributes, then sign. No --deep: the bundle has a single Mach-O and no nested
+# code, and Apple's notary service prefers items signed directly rather than via --deep. The retry
+# is belt-and-suspenders in case anything still touches the staged copy.
+sign_ok=0
+for attempt in 1 2 3 4 5; do
+  xattr -cr "$APP"
+  if codesign --force "${RUNTIME_OPTS[@]}" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP" 2>/tmp/notiful_sign.txt; then
+    sign_ok=1; break
+  fi
+  echo "    sign attempt $attempt failed (likely an xattr race); retrying…"
+  sleep 1
+done
+if [ "$sign_ok" != "1" ]; then
+  echo "ERROR: code signing failed after retries:" >&2
+  sed 's/^/    /' /tmp/notiful_sign.txt >&2
+  echo "    Tip: building from a non-iCloud path (e.g. ~/Developer) avoids the xattr race entirely." >&2
+  exit 1
+fi
 # Finder/sync services often drop a com.apple.FinderInfo xattr on the bundle root afterward, which
 # trips `codesign --strict`. It isn't part of the sealed signature, so strip it post-sign.
 xattr -c "$APP" 2>/dev/null || true
@@ -81,6 +114,41 @@ if ! codesign --verify --deep --strict "$APP" 2>/tmp/notiful_codesign.txt; then
     exit 1
 fi
 echo "    signature: valid (strict). Authority: $(codesign -dvv "$APP" 2>&1 | grep -i '^Authority' | head -1 | cut -d= -f2)"
+
+# Optional notarization + stapling. Enabled by NOTARIZE=1 (release.sh sets this). Needs a Developer
+# ID signature and a stored notarytool keychain profile (see NOTARY_PROFILE).
+NOTARY_PROFILE="${NOTARY_PROFILE:-notiful-notary}"
+if [ "${NOTARIZE:-0}" = "1" ]; then
+  if [ -z "$DEVID_IDENTITY" ]; then
+    echo "ERROR: NOTARIZE=1 but no Developer ID identity — can't notarize." >&2
+    exit 1
+  fi
+  echo "==> Notarizing (profile: $NOTARY_PROFILE)"
+  NOTARY_ZIP="$(mktemp -d)/Notiful-notarize.zip"
+  ditto -c -k --keepParent "$APP" "$NOTARY_ZIP"
+  if ! xcrun notarytool submit "$NOTARY_ZIP" --keychain-profile "$NOTARY_PROFILE" --wait; then
+    echo "ERROR: notarization failed. If this is a credentials error, run once:" >&2
+    echo "    xcrun notarytool store-credentials \"$NOTARY_PROFILE\" --apple-id <email> --team-id 84T567KMYD --password <app-specific-pw>" >&2
+    exit 1
+  fi
+  echo "==> Stapling ticket to the app"
+  xcrun stapler staple "$APP"
+  xcrun stapler validate "$APP"
+fi
+
+# Copy the finished (signed + possibly notarized/stapled) app from the staging dir back to the repo
+# root. The signature and stapled ticket live INSIDE the bundle, so they survive the copy even if
+# iCloud later re-stamps the unsealed root xattr.
+rm -rf "$FINAL_APP"
+ditto "$APP" "$FINAL_APP"
+rm -rf "$STAGE_DIR"
+APP="$FINAL_APP"
+# Final acceptance check on the real artifact. For a notarized+stapled app this should report
+# "accepted ... source=Notarized Developer ID" regardless of any loose root xattr.
+if [ "${NOTARIZE:-0}" = "1" ]; then
+  echo "==> Gatekeeper assessment"
+  spctl -a -vvv "$APP" 2>&1 | sed 's/^/    /' || true
+fi
 
 echo ""
 echo "Built: $APP"
