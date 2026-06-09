@@ -33,6 +33,14 @@ final class BannerWatcher {
 
     var isRunning: Bool { observer != nil }
 
+    /// True if we need to (re)arm: not armed yet, or the banner-host process restarted under a new
+    /// PID (which silently invalidates the existing AXObserver).
+    func needsReArm() -> Bool {
+        if observer == nil { return true }
+        if let current = bannerHostPID(), current != pid { return true }
+        return false
+    }
+
     /// Returns true if the observer was armed. Requires Accessibility trust.
     @discardableResult
     func start() -> Bool {

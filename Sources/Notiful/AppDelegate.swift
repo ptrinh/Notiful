@@ -118,11 +118,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // MARK: - Instant capture (Accessibility banner reader)
 
+    private var bannerHealthTimer: DispatchSourceTimer?
+
     /// Start the banner watcher if the user enabled instant capture. If Accessibility isn't granted
-    /// yet (or NotificationCenter isn't found), retry periodically until it succeeds.
+    /// yet (or NotificationCenter isn't found), retry periodically until it succeeds. Also (re)arms
+    /// if the banner-host process restarted.
     private func tryStartBannerWatcher() {
         guard Preferences.instantCapture else { return }
-        if bannerWatcher?.isRunning == true { return }
+        startBannerHealthTimer()
+        if bannerWatcher?.needsReArm() == false { return }
 
         if bannerWatcher == nil {
             bannerWatcher = BannerWatcher { [weak self] texts, dismiss in
@@ -138,9 +142,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    /// Self-heal independently of the menu: even with the menu-bar icon hidden, periodically ensure
+    /// the watcher is armed and re-arm it if the NotificationCenter process restarted.
+    private func startBannerHealthTimer() {
+        guard bannerHealthTimer == nil else { return }
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now() + 10, repeating: 10)
+        t.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            guard Preferences.instantCapture else { return }
+            if self.bannerWatcher?.needsReArm() != false { self.tryStartBannerWatcher() }
+        }
+        bannerHealthTimer = t
+        t.resume()
+    }
+
     private func stopBannerWatcher() {
         bannerWatcher?.stop()
         bannerWatcher = nil
+        bannerHealthTimer?.cancel()
+        bannerHealthTimer = nil
     }
 
     private func handleBanner(texts: [String], dismiss: @escaping () -> Void) {
