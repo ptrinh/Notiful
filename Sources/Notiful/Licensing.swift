@@ -7,10 +7,9 @@ import NotifulCore
 enum Licensing {
     private static let defaults = UserDefaults.standard
 
-    /// Public key for verifying licenses. Replace with your own from `swift run NotifulLicense keygen`.
-    /// The all-zero placeholder means "no real key yet" → every license fails to verify, and the app
-    /// stays in trial/nag mode, which is the safe default until you wire in your real key.
-    static let publicKeyHex = "0000000000000000000000000000000000000000000000000000000000000000"
+    /// Public key for verifying licenses (matches the private key held by the vendor). It's safe to
+    /// ship publicly — it can only VERIFY licenses, never sign them.
+    static let publicKeyHex = "a37013af217f318f41bbb235acda31fe11ac8fdd895cbb7248c0f5eb5788b49b"
 
     /// Where buyers go to purchase. Set this to your Paddle / Lemon Squeezy / Gumroad checkout URL.
     static let purchaseURL = URL(string: "https://github.com/ptrinh/Notiful#buy")!
