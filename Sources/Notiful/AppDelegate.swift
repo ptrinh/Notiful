@@ -147,7 +147,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func startBannerHealthTimer() {
         guard bannerHealthTimer == nil else { return }
         let t = DispatchSource.makeTimerSource(queue: .main)
-        t.schedule(deadline: .now() + 10, repeating: 10)
+        // Sparse + loose-leeway: this only recovers from a NotificationCenter restart, so it doesn't
+        // need to be punctual. Large leeway lets the OS coalesce the wakeup for better battery.
+        t.schedule(deadline: .now() + 30, repeating: 30, leeway: .seconds(10))
         t.setEventHandler { [weak self] in
             guard let self = self else { return }
             guard Preferences.instantCapture else { return }

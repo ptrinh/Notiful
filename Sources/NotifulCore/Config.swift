@@ -99,19 +99,23 @@ public struct Config: Codable, Equatable, Sendable {
     public init(sources: [Source] = Config.defaultSources,
                 defaultOTPRegex: String = Config.defaultRegex,
                 clipboardAutoClearSeconds: Int = 0,
-                pollIntervalSeconds: Double = 2.0) {
+                pollIntervalSeconds: Double = 15.0) {
         self.sources = sources
         self.defaultOTPRegex = defaultOTPRegex
         self.clipboardAutoClearSeconds = clipboardAutoClearSeconds
         self.pollIntervalSeconds = pollIntervalSeconds
     }
 
+    // Default fallback-poll interval. The real-time path is the kqueue file watcher; this timer is
+    // only a safety net, so a sparse interval keeps idle CPU wakeups low.
+    public static let defaultPollInterval = 15.0
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         sources = try c.decodeIfPresent([Source].self, forKey: .sources) ?? Config.defaultSources
         defaultOTPRegex = try c.decodeIfPresent(String.self, forKey: .defaultOTPRegex) ?? Config.defaultRegex
         clipboardAutoClearSeconds = try c.decodeIfPresent(Int.self, forKey: .clipboardAutoClearSeconds) ?? 0
-        pollIntervalSeconds = try c.decodeIfPresent(Double.self, forKey: .pollIntervalSeconds) ?? 2.0
+        pollIntervalSeconds = try c.decodeIfPresent(Double.self, forKey: .pollIntervalSeconds) ?? Config.defaultPollInterval
     }
 
     // The default regex is intentionally simple; the smart keyword-biased logic lives in OTPExtractor.

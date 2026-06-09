@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 APP="$ROOT/Notiful.app"
 BUNDLE_ID="com.notiful.app"
-VERSION="1.0.2"
+VERSION="1.0.3"
 
 echo "==> Building release binary (universal: arm64 + x86_64)"
 # Full Xcode's xcbuild is needed for SwiftPM's combined --arch build; with Command Line Tools we
@@ -70,8 +70,17 @@ fi
 # "resource fork ... detritus not allowed", silently leaving a wrong/incomplete signature.
 xattr -cr "$APP"
 codesign --force --deep --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+# Finder/sync services often drop a com.apple.FinderInfo xattr on the bundle root afterward, which
+# trips `codesign --strict`. It isn't part of the sealed signature, so strip it post-sign.
+xattr -c "$APP" 2>/dev/null || true
 echo "    signed identifier: $(codesign -dv "$APP" 2>&1 | grep -i '^Identifier')"
-codesign --verify --verbose "$APP" 2>&1 | sed 's/^/    /'
+# Hard-fail if the signature isn't valid — never silently ship/test an unsigned or broken build.
+if ! codesign --verify --deep --strict "$APP" 2>/tmp/notiful_codesign.txt; then
+    echo "ERROR: code signing verification FAILED:" >&2
+    sed 's/^/    /' /tmp/notiful_codesign.txt >&2
+    exit 1
+fi
+echo "    signature: valid (strict). Authority: $(codesign -dvv "$APP" 2>&1 | grep -i '^Authority' | head -1 | cut -d= -f2)"
 
 echo ""
 echo "Built: $APP"

@@ -73,7 +73,9 @@ final class Watcher {
 
     private func startTimer() {
         let t = DispatchSource.makeTimerSource(queue: .main)
-        t.schedule(deadline: .now() + interval, repeating: interval)
+        // Generous leeway: this is only a fallback (kqueue handles real-time), so let the OS batch
+        // these wakeups with other timers to save energy.
+        t.schedule(deadline: .now() + interval, repeating: interval, leeway: .seconds(5))
         t.setEventHandler { [weak self] in
             guard let self = self else { return }
             // If the file source died (WAL gone), try to re-arm.
