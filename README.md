@@ -27,8 +27,7 @@ macOS only autofills codes from its own Messages and Mail. Codes that arrive any
 ### Homebrew (recommended)
 
 ```sh
-brew tap ptrinh/notiful https://github.com/ptrinh/Notiful
-brew install --cask notiful
+brew install ptrinh/notiful/notiful
 open -a Notiful
 ```
 

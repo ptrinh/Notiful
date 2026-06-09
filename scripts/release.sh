@@ -24,7 +24,8 @@ echo "version : $VERSION"
 echo "zip     : $ZIP ($(ls -lh "$ZIP" | awk '{print $5}'))"
 echo "sha256  : $SHA"
 echo ""
-echo "Put this sha256 in Casks/notiful.rb (and bump its version)."
+echo "Put this sha256 (and the new version) in the tap repo's Casks/notiful.rb:"
+echo "  https://github.com/ptrinh/homebrew-notiful/blob/main/Casks/notiful.rb"
 echo ""
 
 if command -v gh >/dev/null 2>&1; then
