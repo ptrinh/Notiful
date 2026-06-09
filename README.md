@@ -31,9 +31,9 @@ The visual configuration window — add sources straight from your recent notifi
 
 ## Install
 
-> **Apple Silicon (arm64) only**, macOS 13+. Notiful is **ad-hoc signed, not notarized**, so macOS
-> Gatekeeper needs a one-time bypass (covered below). It makes **no network calls** — you can read
-> every line of source here.
+> **Universal binary** (Apple Silicon + Intel), macOS 13+. Notiful is **ad-hoc signed, not notarized**,
+> so macOS Gatekeeper needs a one-time bypass (covered below). It makes **no network calls** — you can
+> read every line of source here.
 
 ### Option 1 — Homebrew (recommended)
 
@@ -78,7 +78,7 @@ for details.
 
 ## Requirements
 
-- macOS 13 (Ventura) or later. Verified on **macOS 26**. Apple Silicon (arm64).
+- macOS 13 (Ventura) or later. Verified on **macOS 26**. Universal (Apple Silicon + Intel).
 - To build from source: Swift toolchain (Xcode **or** Command Line Tools — `xcode-select --install`).
 
 ## Build from source

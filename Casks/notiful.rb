@@ -1,6 +1,6 @@
 cask "notiful" do
   version "1.0.0"
-  sha256 "0f22d2c7fbf4e7b8aa69b1c0771dc4df38867948a992d0c163df66e2a71a7a73"
+  sha256 "7a7529281da34b827d10e0cc4056aa70064fb69b74bb4edea89e5c1032ecac0f"
 
   url "https://github.com/ptrinh/Notiful/releases/download/v#{version}/Notiful.zip"
   name "Notiful"
@@ -8,7 +8,6 @@ cask "notiful" do
   homepage "https://github.com/ptrinh/Notiful"
 
   depends_on macos: ">= :ventura"
-  depends_on arch: :arm64
 
   app "Notiful.app"
 
