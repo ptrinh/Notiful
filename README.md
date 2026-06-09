@@ -20,19 +20,18 @@ macOS only autofills codes from its own Messages and Mail. Codes that arrive any
 
 ## Install
 
-> Universal (Apple Silicon + Intel), macOS 13+. Notiful is **not notarized** by Apple, so the first
-> launch needs a one-time Gatekeeper bypass (below). It makes **no network calls** — every line of
-> source is in this repo.
+> Universal (Apple Silicon + Intel), macOS 13+. Notiful is signed with a **Developer ID** certificate
+> and **notarized by Apple**, so it opens normally — no Gatekeeper bypass needed. It makes **no
+> network calls** — every line of source is in this repo.
 
 ### Homebrew (recommended)
 
 ```sh
 brew tap ptrinh/notiful https://github.com/ptrinh/Notiful
-brew install --cask --no-quarantine notiful
+brew install --cask notiful
 open -a Notiful
 ```
 
-`--no-quarantine` is required because the app isn't notarized.
 Later: `brew upgrade --cask notiful` to update, `brew uninstall --cask notiful` to remove
 (add `--zap` to also delete your settings).
 
@@ -40,12 +39,7 @@ Later: `brew upgrade --cask notiful` to update, `brew uninstall --cask notiful` 
 
 1. Download **`Notiful.zip`** from the [latest release](https://github.com/ptrinh/Notiful/releases/latest).
 2. Unzip and move **Notiful.app** to **/Applications**.
-3. Remove the quarantine flag and open it:
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/Notiful.app
-   open -a Notiful
-   ```
-   (Or right-click the app → **Open** → **Open**.)
+3. Double-click to open (`open -a Notiful`).
 
 ---
 

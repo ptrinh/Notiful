@@ -1,6 +1,6 @@
 cask "notiful" do
-  version "1.0.5"
-  sha256 "3d5940d287914ec092beff04e9f6ea7e22eb3148a5dd13ededdcf080eed98bba"
+  version "1.0.6"
+  sha256 "75b223cd3df7a29027caab800494b4b3a4e9646dffe69daa21310bba31034322"
 
   url "https://github.com/ptrinh/Notiful/releases/download/v#{version}/Notiful.zip"
   name "Notiful"
@@ -12,11 +12,6 @@ cask "notiful" do
   app "Notiful.app"
 
   caveats <<~EOS
-    Notiful is ad-hoc signed (not notarized), so install with quarantine disabled:
-      brew install --cask --no-quarantine notiful
-    If you already installed it and macOS blocks it, run:
-      xattr -dr com.apple.quarantine "#{appdir}/Notiful.app"
-
     Notiful needs Full Disk Access to read the notification database:
       System Settings -> Privacy & Security -> Full Disk Access -> enable Notiful, then relaunch.
   EOS
