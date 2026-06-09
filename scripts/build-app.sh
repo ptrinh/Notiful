@@ -7,7 +7,9 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 APP="$ROOT/Notiful.app"
 BUNDLE_ID="com.notiful.app"
-VERSION="1.0.6"
+# Embedded bundle version. release.sh overrides this via the VERSION env var so the release artifact,
+# the git tag, and the cask all agree; this default is just the fallback for a plain local build.
+VERSION="${VERSION:-1.0.6}"
 
 echo "==> Building release binary (universal: arm64 + x86_64)"
 # Full Xcode's xcbuild is needed for SwiftPM's combined --arch build; with Command Line Tools we
