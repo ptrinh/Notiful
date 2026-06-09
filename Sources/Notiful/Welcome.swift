@@ -42,6 +42,7 @@ enum Welcome {
         var rows: [NSView] = []
 
         rows.append(title("Welcome to Notiful"))
+        rows.append(versionLine())
         rows.append(body(
             "Notiful watches notifications from sources you choose — like Google Voice, Telegram or "
             + "WhatsApp — and acts on them: it extracts one-time passcodes (2FA / verification codes) "
@@ -50,8 +51,8 @@ enum Welcome {
 
         if granted {
             rows.append(body(
-                "Full Disk Access is granted, so you’re all set. Open “Configure…” from the menu "
-                + "to choose which notifications to watch."))
+                "Full Disk Access is granted, so you’re all set. Open “Sources & advanced settings…” "
+                + "from the menu to choose which notifications to watch."))
         } else {
             rows.append(subtitle("Why Full Disk Access?"))
             rows.append(body(
@@ -79,6 +80,15 @@ enum Welcome {
         let f = NSTextField(labelWithString: s)
         f.font = .systemFont(ofSize: 22, weight: .bold)
         f.textColor = .labelColor
+        return f
+    }
+
+    /// Dimmed "Version X.Y.Z" line, read from the bundle's Info.plist.
+    private static func versionLine() -> NSTextField {
+        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        let f = NSTextField(labelWithString: "Version \(v)")
+        f.font = .systemFont(ofSize: 12)
+        f.textColor = .secondaryLabelColor
         return f
     }
 
