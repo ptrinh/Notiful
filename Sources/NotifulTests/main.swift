@@ -143,4 +143,34 @@ t.test("config encodes and decodes") {
     t.assert(!cfg.sources.isEmpty, "ships with default sources")
 }
 
+// ───────────────────────── License verification (offline Ed25519) ─────────────────────────
+t.test("license signs and verifies with matching key") {
+    let keys = LicenseCodec.generateKeyPair()
+    let lic = License(email: "buyer@example.com", edition: "pro")
+    let str = try! LicenseCodec.sign(lic, privateKeyHex: keys.privateKeyHex)
+    let back = try! LicenseCodec.verify(str, publicKeyHex: keys.publicKeyHex)
+    t.equal(back.email, "buyer@example.com", "email round-trips")
+    t.equal(back.edition, "pro", "edition round-trips")
+}
+
+t.test("license rejects wrong public key") {
+    let keys = LicenseCodec.generateKeyPair()
+    let other = LicenseCodec.generateKeyPair()
+    let str = try! LicenseCodec.sign(License(email: "a@b.com"), privateKeyHex: keys.privateKeyHex)
+    var threw = false
+    do { _ = try LicenseCodec.verify(str, publicKeyHex: other.publicKeyHex) } catch { threw = true }
+    t.assert(threw, "verification fails against a different key")
+}
+
+t.test("license rejects tampering and malformed input") {
+    let keys = LicenseCodec.generateKeyPair()
+    let str = try! LicenseCodec.sign(License(email: "a@b.com"), privateKeyHex: keys.privateKeyHex)
+    var tamperThrew = false
+    do { _ = try LicenseCodec.verify(str + "x", publicKeyHex: keys.publicKeyHex) } catch { tamperThrew = true }
+    t.assert(tamperThrew, "tampered signature rejected")
+    var malformedThrew = false
+    do { _ = try LicenseCodec.verify("not-a-license", publicKeyHex: keys.publicKeyHex) } catch { malformedThrew = true }
+    t.assert(malformedThrew, "malformed string rejected")
+}
+
 exit(Int32(t.summary()))

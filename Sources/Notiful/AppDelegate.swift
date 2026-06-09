@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         config = ConfigStore.loadOrCreate()
+        Licensing.startTrialClockIfNeeded()
         setupStatusItem()
         setupNotifications()
 
@@ -418,6 +419,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         addItem(menu, "Hide menu bar icon…", #selector(hideIcon))
         menu.addItem(.separator())
 
+        // Licensing: keep it soft — offer to buy / enter a key, never gate.
+        if Licensing.isLicensed {
+            addItem(menu, "Remove License…", #selector(removeLicense))
+        } else {
+            addItem(menu, "Buy a License…", #selector(buyLicense))
+            addItem(menu, "Enter License…", #selector(enterLicense))
+        }
+        menu.addItem(.separator())
+
         addItem(menu, "About Notiful", #selector(showCredit))
         addItem(menu, "Quit Notiful", #selector(quit), key: "q")
     }
@@ -433,6 +443,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let last = lastCapture {
             menu.addItem(disabledItem("Last code: \(last.source) · \(Self.relativeTime(since: last.at))", indent: 1))
         }
+        menu.addItem(disabledItem(Licensing.menuStatusLine, indent: 1))
     }
 
     /// A bold, greyed-out section label.
@@ -573,6 +584,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @objc private func showCredit() { Welcome.showIfNeeded(force: true) }
+
+    @objc private func buyLicense() { NSWorkspace.shared.open(Licensing.purchaseURL) }
+
+    @objc private func enterLicense() {
+        let alert = NSAlert()
+        alert.messageText = "Enter your Notiful license"
+        alert.informativeText = "Paste the license key from your purchase confirmation."
+        alert.addButton(withTitle: "Activate")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 48))
+        field.placeholderString = "NOTIFUL1.…"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            let email = try Licensing.activate(field.stringValue)
+            rebuildMenu()
+            let ok = NSAlert()
+            ok.messageText = "Thank you — Notiful is now licensed"
+            ok.informativeText = "Licensed to \(email)."
+            ok.addButton(withTitle: "OK")
+            ok.runModal()
+        } catch {
+            let bad = NSAlert()
+            bad.alertStyle = .warning
+            bad.messageText = "That license key isn’t valid"
+            bad.informativeText = "Check that you pasted the whole key. If it still fails, contact support with your purchase email."
+            bad.addButton(withTitle: "OK")
+            bad.runModal()
+        }
+    }
+
+    @objc private func removeLicense() {
+        let confirm = NSAlert()
+        confirm.messageText = "Remove the license from this Mac?"
+        confirm.informativeText = "Notiful keeps working, but returns to the unlicensed reminder. You can re-enter the key anytime."
+        confirm.addButton(withTitle: "Remove")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        Licensing.deactivate()
+        rebuildMenu()
+    }
 
     private var configWindow: ConfigWindowController?
 

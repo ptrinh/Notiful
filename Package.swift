@@ -21,5 +21,11 @@ let package = Package(
             name: "NotifulTests",
             dependencies: ["NotifulCore"]
         ),
+        // Vendor-side tool: generate a key pair and sign perpetual licenses.
+        // Run with: swift run NotifulLicense <keygen|sign|verify> …
+        .executableTarget(
+            name: "NotifulLicense",
+            dependencies: ["NotifulCore"]
+        ),
     ]
 )
