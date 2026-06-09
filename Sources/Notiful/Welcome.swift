@@ -19,7 +19,9 @@ enum Welcome {
         alert.informativeText = ""
         alert.alertStyle = .informational
         if let icon = NSApp.applicationIconImage { alert.icon = icon }
-        alert.accessoryView = contentView(granted: granted)
+        // Show the donation/credit only when reopened from "About" (force) — not during first-run
+        // onboarding, where asking for money before any value has been delivered reads as pushy.
+        alert.accessoryView = contentView(granted: granted, showCredit: force)
         if !granted {
             alert.addButton(withTitle: "Open Full Disk Access")
         }
@@ -36,7 +38,7 @@ enum Welcome {
 
     // MARK: - Content
 
-    private static func contentView(granted: Bool) -> NSView {
+    private static func contentView(granted: Bool, showCredit: Bool) -> NSView {
         var rows: [NSView] = []
 
         rows.append(title("Welcome to Notiful"))
@@ -58,7 +60,7 @@ enum Welcome {
                 + "Access. Notiful reads it locally and never sends anything over the network."))
         }
 
-        rows.append(creditView())
+        if showCredit { rows.append(creditView()) }
 
         let stack = NSStackView(views: rows)
         stack.orientation = .vertical

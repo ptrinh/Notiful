@@ -20,6 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Codes acted on recently (in memory), to de-dupe the instant Accessibility path against the
     /// slower database path so the same code isn't handled twice.
     private var recentlyActed: [(code: String, at: Date)] = []
+    /// Last code we acted on, for the menu's status header (source name + when).
+    private var lastCapture: (source: String, at: Date)?
 
     private let categoryID = "NOTIFUL_OTP"
     private let copyAction = "COPY"
@@ -92,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func handle(_ detection: DetectedCode, via: String = "database (~5s delay)") -> Bool {
         guard !actedRecently(detection.code) else { return false }
         NotifulLog.event("Captured \(detection.source.name) code \(NotifulLog.mask(detection.code)) — \(via)")
+        lastCapture = (detection.source.name, Date())
 
         let actions = detection.source.actions
         if actions.autoCopy {
@@ -333,14 +336,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             NSStatusBar.system.removeStatusItem(item)
             statusItem = nil
         }
-        // Tell the user how to get it back (so they aren't stuck).
-        let alert = NSAlert()
-        alert.messageText = "Menu bar icon hidden"
-        alert.informativeText = "Notiful keeps running in the background. To show the icon again, "
-            + "open Notiful from Applications (or Spotlight) — it will reappear."
-        alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
     }
 
     private func showMenuBarIcon() {
@@ -354,66 +349,129 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return true
     }
 
+    private let menu = NSMenu()
+
     private func rebuildMenu() {
-        let menu = NSMenu()
+        populateMenu(menu)
+        menu.delegate = self
+        statusItem?.menu = menu
+    }
+
+    private func populateMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
 
         // Health warning at the very top, only when notifications are actually disabled in Settings.
         if Preferences.notificationsEnabled && !notificationsAuthorized {
-            let w = NSMenuItem(title: "⚠️ Notiful notifications are off — open Settings",
+            let w = NSMenuItem(title: "⚠️ Banners are turned off in macOS — open Settings",
                                action: #selector(openNotificationSettings), keyEquivalent: "")
             w.target = self
             menu.addItem(w)
             menu.addItem(.separator())
         }
 
-        let toggle = NSMenuItem(title: enabled ? "Disable" : "Enable",
+        // Status header (non-clickable): what Notiful is doing right now.
+        addStatusHeader(menu)
+        menu.addItem(.separator())
+
+        // Primary on/off, with an explicit object so it's never an ambiguous bare verb.
+        let toggle = NSMenuItem(title: enabled ? "Pause watching" : "Resume watching",
                                 action: #selector(toggleEnabled), keyEquivalent: "")
         toggle.target = self
         menu.addItem(toggle)
         menu.addItem(.separator())
 
-        let notif = NSMenuItem(title: "Notiful notifications", action: #selector(toggleNotifications), keyEquivalent: "")
+        // --- Settings group ---
+        menu.addItem(sectionHeader("Settings"))
+
+        let notif = NSMenuItem(title: "Show a banner when a code is found", action: #selector(toggleNotifications), keyEquivalent: "")
         notif.target = self
         notif.state = Preferences.notificationsEnabled ? .on : .off
         menu.addItem(notif)
 
-        let instant = NSMenuItem(title: "Instant capture (Accessibility)", action: #selector(toggleInstantCapture), keyEquivalent: "")
+        let instant = NSMenuItem(title: "Instant capture (read banners as they appear)", action: #selector(toggleInstantCapture), keyEquivalent: "")
         instant.target = self
         instant.state = Preferences.instantCapture ? .on : .off
         menu.addItem(instant)
 
         if Preferences.instantCapture {
-            let dismiss = NSMenuItem(title: "    Auto-dismiss source banner", action: #selector(toggleAutoDismiss), keyEquivalent: "")
+            let dismiss = NSMenuItem(title: "Auto-hide the original banner after capture", action: #selector(toggleAutoDismiss), keyEquivalent: "")
             dismiss.target = self
+            dismiss.indentationLevel = 1
             dismiss.state = Preferences.autoDismissSourceBanner ? .on : .off
             menu.addItem(dismiss)
         }
-
-        addItem(menu, "Configure…", #selector(openConfigUI))
-        addItem(menu, "Hide menu bar icon", #selector(hideIcon))
 
         let login = NSMenuItem(title: "Launch at login", action: #selector(toggleLoginItem), keyEquivalent: "")
         login.target = self
         login.state = isLoginEnabled() ? .on : .off
         menu.addItem(login)
+
+        addItem(menu, "Sources & advanced settings…", #selector(openConfigUI))
         menu.addItem(.separator())
 
-        addItem(menu, "Open log (Console)", #selector(openLog))
+        // --- Troubleshooting group ---
+        addItem(menu, "Open Notiful’s log…", #selector(openLog))
         // Only show the grant shortcut while access is still missing.
         if !FDA.isGranted() {
             addItem(menu, "Grant Full Disk Access…", #selector(grantFDA))
         }
-
+        addItem(menu, "Hide menu bar icon…", #selector(hideIcon))
         menu.addItem(.separator())
-        addItem(menu, "Credit", #selector(showCredit))
-        addItem(menu, "Quit Notiful", #selector(quit), key: "q")
 
-        menu.delegate = self
-        statusItem?.menu = menu
+        addItem(menu, "About Notiful", #selector(showCredit))
+        addItem(menu, "Quit Notiful", #selector(quit), key: "q")
+    }
+
+    /// Non-clickable header(s) describing current state: paused/watching, source count, last capture.
+    private func addStatusHeader(_ menu: NSMenu) {
+        let count = config.sources.count
+        let state = enabled
+            ? "Watching \(count) source\(count == 1 ? "" : "s")"
+            : "Paused"
+        menu.addItem(disabledItem(enabled ? "● \(state)" : "⏸ \(state)"))
+
+        if let last = lastCapture {
+            menu.addItem(disabledItem("Last code: \(last.source) · \(Self.relativeTime(since: last.at))", indent: 1))
+        }
+    }
+
+    /// A bold, greyed-out section label.
+    private func sectionHeader(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        return item
+    }
+
+    private func disabledItem(_ title: String, indent: Int = 0) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.indentationLevel = indent
+        return item
+    }
+
+    private static func relativeTime(since date: Date) -> String {
+        let secs = Int(Date().timeIntervalSince(date))
+        switch secs {
+        case ..<10: return "just now"
+        case ..<60: return "\(secs)s ago"
+        case ..<3600: return "\(secs / 60)m ago"
+        case ..<86400: return "\(secs / 3600)h ago"
+        default: return "\(secs / 86400)d ago"
+        }
     }
 
     // Re-check notification permission each time the menu opens, so the warning is always current.
     // Also re-arm the banner watcher in case the NotificationCenter process was restarted.
+    // Repopulate the same menu instance just before it's shown, so the status header (source count,
+    // last capture) and toggle states are always live without swapping the menu out from under AppKit.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        populateMenu(menu)
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
         refreshNotificationAuth()
         if Preferences.instantCapture, bannerWatcher?.isRunning != true { tryStartBannerWatcher() }
@@ -439,13 +497,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @objc private func openLog() {
-        // Open Console filtered to our subsystem is not directly linkable; just open Console.
-        if let console = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") {
-            NSWorkspace.shared.openApplication(at: console, configuration: NSWorkspace.OpenConfiguration())
+        // Console can't be opened pre-filtered to our subsystem, which left users in an unfiltered
+        // firehose. Instead export just Notiful's recent log lines to a text file and open that.
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("Notiful-log.txt")
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/log")
+        task.arguments = ["show", "--predicate", "subsystem == \"com.notiful.app\"",
+                          "--last", "6h", "--info", "--style", "compact"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.terminationHandler = { _ in
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let body = data.isEmpty ? "No Notiful log entries in the last 6 hours." : String(decoding: data, as: UTF8.self)
+            let header = "Notiful log — last 6 hours\n\n"
+            try? (header + body).data(using: .utf8)?.write(to: out)
+            DispatchQueue.main.async { NSWorkspace.shared.open(out) }
+        }
+        do { try task.run() } catch {
+            NotifulLog.error("open log: \(error)")
         }
     }
 
-    @objc private func hideIcon() { hideMenuBarIcon() }
+    @objc private func hideIcon() {
+        let confirm = NSAlert()
+        confirm.messageText = "Hide the menu bar icon?"
+        confirm.informativeText = "This is how you reach Notiful’s menu. With it hidden, Notiful keeps "
+            + "running in the background — to bring the icon back, open Notiful from Applications or Spotlight."
+        confirm.addButton(withTitle: "Hide Icon")
+        confirm.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        hideMenuBarIcon()
+    }
 
     @objc private func toggleInstantCapture() {
         Preferences.instantCapture.toggle()

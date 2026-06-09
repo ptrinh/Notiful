@@ -14,6 +14,14 @@ final class ConfigWindowController: NSObject, NSTableViewDataSource, NSTableView
     private var recentTable: NSTableView!
     private var sourcesTable: NSTableView!
 
+    // Buttons whose enabled-state depends on a row being selected (#6).
+    private var recentDependentButtons: [NSButton] = []
+    private var sourceDependentButtons: [NSButton] = []
+
+    // Empty-state placeholders shown over each table when it has no rows (#7).
+    private var recentPlaceholder: NSTextField!
+    private var sourcesPlaceholder: NSTextField!
+
     init(database: NotificationDatabase?, current: Config, onSave: @escaping (Config) -> Void) {
         self.database = database
         self.config = current
@@ -50,25 +58,28 @@ final class ConfigWindowController: NSObject, NSTableViewDataSource, NSTableView
         content.autoresizingMask = [.width, .height]
         window.contentView = content
 
-        let recentLabel = label("Recent notifications — select one, then add it as a source:")
+        let recentLabel = label("Recent notifications — pick one, then add it as a source to watch:")
         let recentScroll = makeRecentTable()
-        let recentButtons = makeButtonRow([
-            ("Add by App (native apps)", #selector(addByApp)),
-            ("Add by Sender text (browser sources)", #selector(addBySender)),
-            ("Refresh", #selector(refreshClicked)),
+        let (recentButtons, recentBtns) = makeButtonRow([
+            ("Add this app", #selector(addByApp), true),
+            ("Add by matching text…", #selector(addBySender), true),
+            ("Refresh", #selector(refreshClicked), false),
         ])
+        recentDependentButtons = recentBtns
 
-        let sourcesLabel = label("Configured sources:")
+        let sourcesLabel = label("Sources you’re watching:")
         let sourcesScroll = makeSourcesTable()
-        let sourcesButtons = makeButtonRow([
-            ("Remove", #selector(removeSource)),
-            ("Set command on event", #selector(setCommand)),
-            ("Toggle Auto-copy to clipboard", #selector(toggleSourceAutoCopy)),
+        let (sourcesButtons, sourceBtns) = makeButtonRow([
+            ("Edit…", #selector(editSource), true),
+            ("Auto-copy on/off", #selector(toggleSourceAutoCopy), true),
+            ("Run command…", #selector(setCommand), true),
+            ("Remove", #selector(removeSource), true),
         ])
+        sourceDependentButtons = sourceBtns
 
-        let bottom = makeButtonRow([
-            ("Open config file (raw JSON)", #selector(openRawConfig)),
-            ("Done", #selector(closeWindow)),
+        let (bottom, _) = makeButtonRow([
+            ("Edit raw config (JSON)", #selector(openRawConfig), false),
+            ("Done", #selector(closeWindow), false),
         ])
 
         let stack = NSStackView(views: [
@@ -100,16 +111,20 @@ final class ConfigWindowController: NSObject, NSTableViewDataSource, NSTableView
         return l
     }
 
-    private func makeButtonRow(_ items: [(String, Selector)]) -> NSView {
-        let buttons = items.map { (title, sel) -> NSButton in
+    /// Builds a horizontal button row. Each item is (title, selector, dependsOnSelection).
+    /// Returns the row plus the subset of buttons that depend on a row being selected (#6).
+    private func makeButtonRow(_ items: [(String, Selector, Bool)]) -> (NSView, [NSButton]) {
+        var dependent: [NSButton] = []
+        let buttons = items.map { (title, sel, depends) -> NSButton in
             let b = NSButton(title: title, target: self, action: sel)
             b.bezelStyle = .rounded
+            if depends { b.isEnabled = false; dependent.append(b) }
             return b
         }
         let row = NSStackView(views: buttons)
         row.orientation = .horizontal
         row.spacing = 8
-        return row
+        return (row, dependent)
     }
 
     private func makeRecentTable() -> NSScrollView {
@@ -123,7 +138,9 @@ final class ConfigWindowController: NSObject, NSTableViewDataSource, NSTableView
         table.delegate = self
         table.usesAlternatingRowBackgroundColors = true
         recentTable = table
-        return scroll(table)
+        let s = scroll(table)
+        recentPlaceholder = placeholder(over: s)
+        return s
     }
 
     private func makeSourcesTable() -> NSScrollView {
@@ -136,7 +153,25 @@ final class ConfigWindowController: NSObject, NSTableViewDataSource, NSTableView
         table.delegate = self
         table.usesAlternatingRowBackgroundColors = true
         sourcesTable = table
-        return scroll(table)
+        let s = scroll(table)
+        sourcesPlaceholder = placeholder(over: s)
+        return s
+    }
+
+    /// A centered, dimmed message shown over an empty table; hidden once it has rows (#7).
+    private func placeholder(over scrollView: NSScrollView) -> NSTextField {
+        let field = NSTextField(wrappingLabelWithString: "")
+        field.alignment = .center
+        field.textColor = .secondaryLabelColor
+        field.font = .systemFont(ofSize: 12)
+        field.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.addSubview(field)
+        NSLayoutConstraint.activate([
+            field.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
+            field.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
+            field.widthAnchor.constraint(lessThanOrEqualTo: scrollView.widthAnchor, constant: -40),
+        ])
+        return field
     }
 
     private func addColumn(_ table: NSTableView, _ id: String, _ title: String, _ width: CGFloat) {
@@ -157,12 +192,40 @@ final class ConfigWindowController: NSObject, NSTableViewDataSource, NSTableView
 
     // MARK: - Data
 
+    private var canReadDB = true
+
     private func reloadRecent() {
-        guard let db = database, db.canRead() else { recent = []; recentTable?.reloadData(); return }
+        guard let db = database, db.canRead() else {
+            canReadDB = false; recent = []; recentTable?.reloadData(); updateUIState(); return
+        }
+        canReadDB = true
         let own = (Bundle.main.bundleIdentifier ?? "com.notiful.app").lowercased()
         recent = ((try? db.fetchRecords(limit: 60)) ?? [])
             .filter { $0.bundleID.lowercased() != own }  // hide our own notifications
         recentTable?.reloadData()
+        updateUIState()
+    }
+
+    /// Keep empty-state placeholders and selection-dependent buttons in sync with the tables (#6, #7).
+    private func updateUIState() {
+        if !canReadDB {
+            recentPlaceholder?.stringValue = "Can’t read notifications yet — grant Full Disk Access from Notiful’s menu, then Refresh."
+        } else {
+            recentPlaceholder?.stringValue = "No notifications yet. When an app shows one, it appears here."
+        }
+        recentPlaceholder?.isHidden = !recent.isEmpty
+
+        sourcesPlaceholder?.stringValue = "No sources yet. Select a notification above and click “Add this app”."
+        sourcesPlaceholder?.isHidden = !config.sources.isEmpty
+
+        let hasRecent = (recentTable?.selectedRow ?? -1) >= 0
+        recentDependentButtons.forEach { $0.isEnabled = hasRecent }
+        let hasSource = (sourcesTable?.selectedRow ?? -1) >= 0
+        sourceDependentButtons.forEach { $0.isEnabled = hasSource }
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        updateUIState()
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
@@ -200,10 +263,12 @@ final class ConfigWindowController: NSObject, NSTableViewDataSource, NSTableView
 
     private func matchSummary(_ m: SourceMatch) -> String {
         var parts: [String] = []
-        if let a = m.appBundleIds, !a.isEmpty { parts.append("app: \(a.joined(separator: ","))") }
-        if let s = m.senderContains, !s.isEmpty { parts.append("sender~: \(s.joined(separator: ","))") }
-        if let t = m.titleContains, !t.isEmpty { parts.append("title~: \(t.joined(separator: ","))") }
-        if let b = m.bodyContains, !b.isEmpty { parts.append("body~: \(b.joined(separator: ","))") }
+        if let a = m.appBundleIds, !a.isEmpty {
+            parts.append("App is \(a.map(appName).joined(separator: " or "))")
+        }
+        if let s = m.senderContains, !s.isEmpty { parts.append("Sender contains “\(s.joined(separator: "” or “"))”") }
+        if let t = m.titleContains, !t.isEmpty { parts.append("Title contains “\(t.joined(separator: "” or “"))”") }
+        if let b = m.bodyContains, !b.isEmpty { parts.append("Body contains “\(b.joined(separator: "” or “"))”") }
         return parts.joined(separator: " · ")
     }
 
@@ -260,17 +325,54 @@ final class ConfigWindowController: NSObject, NSTableViewDataSource, NSTableView
 
     @objc private func removeSource() {
         guard let i = selectedSourceIndex() else { return }
+        let name = config.sources[i].name
+        let confirm = NSAlert()
+        confirm.messageText = "Remove “\(name)”?"
+        confirm.informativeText = "Notiful will stop watching this source. You can add it again later."
+        confirm.addButton(withTitle: "Remove")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
         config.sources.remove(at: i)
+        commit()
+    }
+
+    /// Rename a source and edit the text it matches on (#3). App-bundle matches stay as-is; this
+    /// edits the human-entered "matching text" sources, which is where typos actually happen.
+    @objc private func editSource() {
+        guard let i = selectedSourceIndex() else { return }
+        var source = config.sources[i]
+
+        guard let newName = prompt(title: "Edit source",
+                                   message: "Name shown in Notiful:",
+                                   default: source.name), !newName.isEmpty else { return }
+        source.name = newName
+
+        // Only offer to edit matching text for text-based sources (not app-bundle matches).
+        if let sender = source.match.senderContains, !sender.isEmpty {
+            guard let text = prompt(title: "Edit matching text",
+                                    message: "Match notifications whose title or subtitle contains:",
+                                    default: sender.joined(separator: ", ")) else { return }
+            let parts = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            source.match.senderContains = parts.isEmpty ? nil : parts
+        }
+
+        config.sources[i] = source
         commit()
     }
 
     @objc private func setCommand() {
         guard let i = selectedSourceIndex() else { return }
         let current = config.sources[i].actions.runCommand ?? ""
-        guard let cmd = prompt(title: "Run command on new code",
-                               message: "Shell command. Available: $NOTIFUL_CODE, $NOTIFUL_SOURCE, $NOTIFUL_APP, $NOTIFUL_TITLE, $NOTIFUL_SUBTITLE, $NOTIFUL_BODY.\nLeave empty to remove.",
-                               default: current) else { return }
-        config.sources[i].actions.runCommand = cmd.isEmpty ? nil : cmd
+        guard let cmd = promptMultiline(
+                title: "Run a command when a code is found",
+                message: "Shell command to run. These variables are available:\n"
+                    + "  $NOTIFUL_CODE — the detected code\n"
+                    + "  $NOTIFUL_SOURCE — this source’s name\n"
+                    + "  $NOTIFUL_APP, $NOTIFUL_TITLE, $NOTIFUL_SUBTITLE, $NOTIFUL_BODY\n"
+                    + "Leave empty to remove the command.",
+                default: current) else { return }
+        let trimmed = cmd.trimmingCharacters(in: .whitespacesAndNewlines)
+        config.sources[i].actions.runCommand = trimmed.isEmpty ? nil : trimmed
         commit()
     }
 
@@ -292,6 +394,7 @@ final class ConfigWindowController: NSObject, NSTableViewDataSource, NSTableView
         onSave(config)
         sourcesTable.reloadData()
         recentTable.reloadData()  // match column may have changed
+        updateUIState()
     }
 
     // MARK: - Small helpers
@@ -311,5 +414,29 @@ final class ConfigWindowController: NSObject, NSTableViewDataSource, NSTableView
         a.accessoryView = field
         a.window.initialFirstResponder = field
         return a.runModal() == .alertFirstButtonReturn ? field.stringValue : nil
+    }
+
+    /// Like `prompt`, but with a multiline, scrollable text view — for shell commands (#11).
+    private func promptMultiline(title: String, message: String, default def: String) -> String? {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = message
+        a.addButton(withTitle: "OK")
+        a.addButton(withTitle: "Cancel")
+
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 460, height: 90))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        let textView = NSTextView(frame: scroll.bounds)
+        textView.string = def
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.isRichText = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.autoresizingMask = [.width]
+        scroll.documentView = textView
+        a.accessoryView = scroll
+        a.window.initialFirstResponder = textView
+        return a.runModal() == .alertFirstButtonReturn ? textView.string : nil
     }
 }
