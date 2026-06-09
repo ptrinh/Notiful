@@ -19,6 +19,13 @@ public enum NotifulLog {
         print("[Notiful] \(message)")
     }
 
+    /// Notable events (code detections, etc.) logged at `.notice` level so they PERSIST to the
+    /// unified log and can be retrieved later with `log show` — unlike `.info`, which is memory-only.
+    public static func event(_ message: String) {
+        logger.notice("\(message, privacy: .public)")
+        print("[Notiful] \(message)")
+    }
+
     public static func error(_ message: String) {
         logger.error("\(message, privacy: .public)")
         FileHandle.standardError.write(Data("[Notiful] ERROR: \(message)\n".utf8))

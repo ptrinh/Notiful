@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 APP="$ROOT/Notiful.app"
 BUNDLE_ID="com.notiful.app"
-VERSION="1.0.1"
+VERSION="1.0.2"
 
 echo "==> Building release binary (universal: arm64 + x86_64)"
 # Full Xcode's xcbuild is needed for SwiftPM's combined --arch build; with Command Line Tools we
@@ -51,8 +51,26 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> Ad-hoc code signing (required for UNUserNotificationCenter + SMAppService)"
-codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
+echo "==> Code signing (required for UNUserNotificationCenter + SMAppService)"
+# Prefer a STABLE self-signed identity so macOS TCC grants (Full Disk Access, Accessibility) survive
+# rebuilds — the signed app keeps the same designated requirement (identifier + cert hash) every
+# build. Falls back to ad-hoc if the identity isn't set up. Run scripts/make-signing-cert.sh once.
+SIGN_IDENTITY="Notiful Self-Signed"
+SIGN_KEYCHAIN="$HOME/Library/Keychains/notiful-codesign.keychain-db"
+if security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
+  SIGN_ID="$SIGN_IDENTITY"
+  [ -f "$SIGN_KEYCHAIN" ] && security unlock-keychain -p "" "$SIGN_KEYCHAIN" 2>/dev/null || true
+  echo "    using stable identity: $SIGN_IDENTITY (TCC grants persist across rebuilds)"
+else
+  SIGN_ID="-"
+  echo "    no stable identity found — using ad-hoc (FDA/Accessibility will reset each rebuild)."
+  echo "    run ./scripts/make-signing-cert.sh once to fix that."
+fi
+# Strip extended attributes first — stray xattrs (e.g. on the copied .icns) make codesign fail with
+# "resource fork ... detritus not allowed", silently leaving a wrong/incomplete signature.
+xattr -cr "$APP"
+codesign --force --deep --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+echo "    signed identifier: $(codesign -dv "$APP" 2>&1 | grep -i '^Identifier')"
 codesign --verify --verbose "$APP" 2>&1 | sed 's/^/    /'
 
 echo ""

@@ -89,9 +89,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Acts on a detection. Returns false (no-op) if this code was already handled recently — this is
     /// what keeps the instant Accessibility path and the slower DB path from double-acting.
     @discardableResult
-    private func handle(_ detection: DetectedCode) -> Bool {
+    private func handle(_ detection: DetectedCode, via: String = "database (~5s delay)") -> Bool {
         guard !actedRecently(detection.code) else { return false }
-        NotifulLog.info("Detected code from \(detection.source.name): \(NotifulLog.mask(detection.code))")
+        NotifulLog.event("Captured \(detection.source.name) code \(NotifulLog.mask(detection.code)) — \(via)")
 
         let actions = detection.source.actions
         if actions.autoCopy {
@@ -186,11 +186,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let code = code, !code.isEmpty else { return }
 
         let detection = DetectedCode(code: code, source: source, record: record)
-        let acted = handle(detection)
-        if acted {
-            NotifulLog.info("Instant capture via Accessibility: \(source.name)")
-            if Preferences.autoDismissSourceBanner { dismiss() }
-        }
+        let acted = handle(detection, via: "INSTANT (Accessibility)")
+        if acted, Preferences.autoDismissSourceBanner { dismiss() }
     }
 
     // MARK: - Notifications
