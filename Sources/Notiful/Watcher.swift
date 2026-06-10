@@ -21,12 +21,16 @@ final class Watcher {
         self.onChange = onChange
     }
 
+    private var stopped = false
+
     func start() {
+        stopped = false
         armFileSource()
         startTimer()
     }
 
     func stop() {
+        stopped = true
         debounceWork?.cancel()
         timer?.cancel(); timer = nil
         teardownFileSource()
@@ -34,11 +38,19 @@ final class Watcher {
 
     // MARK: - File source
 
-    private func armFileSource() {
+    private func armFileSource(attempt: Int = 0) {
+        guard !stopped else { return }
         teardownFileSource()
         fd = open(walURL.path, O_EVTONLY)
         guard fd >= 0 else {
-            // WAL may not exist momentarily (after checkpoint). The timer will cover us; retry soon.
+            // WAL may not exist momentarily (after a checkpoint). Retry briefly on our own so the
+            // fallback timer can stay sparse; it still covers us if the WAL is gone for longer.
+            if attempt < 5 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5 * Double(attempt + 1)) { [weak self] in
+                    guard let self = self, self.fd < 0 else { return }
+                    self.armFileSource(attempt: attempt + 1)
+                }
+            }
             return
         }
         let src = DispatchSource.makeFileSystemObjectSource(
@@ -74,8 +86,9 @@ final class Watcher {
     private func startTimer() {
         let t = DispatchSource.makeTimerSource(queue: .main)
         // Generous leeway: this is only a fallback (kqueue handles real-time), so let the OS batch
-        // these wakeups with other timers to save energy.
-        t.schedule(deadline: .now() + interval, repeating: interval, leeway: .seconds(5))
+        // these wakeups with other timers to save energy. Leeway scales with the interval.
+        let leeway = DispatchTimeInterval.milliseconds(Int(min(10_000, interval * 500)))
+        t.schedule(deadline: .now() + interval, repeating: interval, leeway: leeway)
         t.setEventHandler { [weak self] in
             guard let self = self else { return }
             // If the file source died (WAL gone), try to re-arm.

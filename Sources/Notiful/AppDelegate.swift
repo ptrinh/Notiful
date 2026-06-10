@@ -172,52 +172,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // MARK: - Instant capture (Accessibility banner reader)
 
-    private var bannerHealthTimer: DispatchSourceTimer?
+    private var bannerHostKVO: NSKeyValueObservation?
+    /// Backoff for the not-yet-trusted retry loop (reset on success / explicit toggle).
+    private var bannerRetryDelay: TimeInterval = 2
 
     /// Start the banner watcher if the user enabled instant capture. If Accessibility isn't granted
-    /// yet (or NotificationCenter isn't found), retry periodically until it succeeds. Also (re)arms
-    /// if the banner-host process restarted.
+    /// yet (or NotificationCenter isn't found), retry with backoff until it succeeds. Re-arming
+    /// after a banner-host restart is event-driven (KVO below), not polled.
     private func tryStartBannerWatcher() {
         guard Preferences.instantCapture else { return }
-        startBannerHealthTimer()
-        if bannerWatcher?.needsReArm() == false { return }
+        installBannerHostObserver()
+        if bannerWatcher?.needsReArm() == false { bannerRetryDelay = 2; return }
 
         if bannerWatcher == nil {
             bannerWatcher = BannerWatcher { [weak self] texts, dismiss in
                 self?.handleBanner(texts: texts, dismiss: dismiss)
             }
         }
-        if bannerWatcher?.start() != true {
-            // Not trusted yet (or host not found) — retry while still enabled.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                guard let self = self, Preferences.instantCapture else { return }
+        if bannerWatcher?.start() == true {
+            bannerRetryDelay = 2
+            return
+        }
+        // Not trusted yet (or host not found) — retry while still enabled, backing off so a
+        // permission that's never granted doesn't keep waking the process every 2s forever.
+        let delay = bannerRetryDelay
+        bannerRetryDelay = min(bannerRetryDelay * 2, 60)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self, Preferences.instantCapture else { return }
+            self.tryStartBannerWatcher()
+        }
+    }
+
+    /// Event-driven self-heal: KVO on NSWorkspace.runningApplications (which, unlike the workspace
+    /// launch/terminate notifications, includes UI agents like NotificationCenter) re-arms the AX
+    /// observer the moment the banner host restarts. Replaces a 30-second polling timer that
+    /// enumerated every running app — zero idle wakeups when nothing changes.
+    private func installBannerHostObserver() {
+        guard bannerHostKVO == nil else { return }
+        bannerHostKVO = NSWorkspace.shared.observe(\.runningApplications, options: [.new]) { [weak self] _, change in
+            guard let self = self, Preferences.instantCapture else { return }
+            guard (change.newValue ?? []).contains(where: {
+                $0.bundleIdentifier == "com.apple.notificationcenterui"
+            }) else { return }
+            DispatchQueue.main.async {
+                self.bannerRetryDelay = 2
                 self.tryStartBannerWatcher()
             }
         }
     }
 
-    /// Self-heal independently of the menu: even with the menu-bar icon hidden, periodically ensure
-    /// the watcher is armed and re-arm it if the NotificationCenter process restarted.
-    private func startBannerHealthTimer() {
-        guard bannerHealthTimer == nil else { return }
-        let t = DispatchSource.makeTimerSource(queue: .main)
-        // Sparse + loose-leeway: this only recovers from a NotificationCenter restart, so it doesn't
-        // need to be punctual. Large leeway lets the OS coalesce the wakeup for better battery.
-        t.schedule(deadline: .now() + 30, repeating: 30, leeway: .seconds(10))
-        t.setEventHandler { [weak self] in
-            guard let self = self else { return }
-            guard Preferences.instantCapture else { return }
-            if self.bannerWatcher?.needsReArm() != false { self.tryStartBannerWatcher() }
-        }
-        bannerHealthTimer = t
-        t.resume()
-    }
-
     private func stopBannerWatcher() {
         bannerWatcher?.stop()
         bannerWatcher = nil
-        bannerHealthTimer?.cancel()
-        bannerHealthTimer = nil
+        bannerHostKVO?.invalidate()
+        bannerHostKVO = nil
     }
 
     private func handleBanner(texts: [String], dismiss: @escaping () -> Void) {
@@ -650,6 +658,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func toggleInstantCapture() {
         Preferences.instantCapture.toggle()
+        bannerRetryDelay = 2  // user is actively granting — retry promptly again
         if Preferences.instantCapture {
             if !Accessibility.isTrusted() {
                 Accessibility.requestTrust()

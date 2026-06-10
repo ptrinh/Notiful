@@ -14,8 +14,11 @@ VERSION="${VERSION:-1.1.0}"
 echo "==> Building release binary (universal: arm64 + x86_64)"
 # Full Xcode's xcbuild is needed for SwiftPM's combined --arch build; with Command Line Tools we
 # build each slice separately and lipo them into a universal binary.
-swift build -c release --arch arm64  --product Notiful
-swift build -c release --arch x86_64 --product Notiful
+# Size-optimized: -Osize trades a little speed (irrelevant for a notification watcher) for a much
+# smaller binary; -dead_strip drops unreferenced code at link time.
+SIZE_FLAGS=(-Xswiftc -Osize -Xlinker -dead_strip)
+swift build -c release --arch arm64  --product Notiful "${SIZE_FLAGS[@]}"
+swift build -c release --arch x86_64 --product Notiful "${SIZE_FLAGS[@]}"
 BIN_ARM="$(swift build -c release --arch arm64  --product Notiful --show-bin-path)/Notiful"
 BIN_X86="$(swift build -c release --arch x86_64 --product Notiful --show-bin-path)/Notiful"
 
@@ -24,6 +27,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create -output "$APP/Contents/MacOS/Notiful" "$BIN_ARM" "$BIN_X86"
 echo "    architectures: $(lipo -archs "$APP/Contents/MacOS/Notiful")"
+
+# Strip local/debug symbols (must happen BEFORE codesign). dyld only needs exported symbols.
+echo "==> Stripping symbols"
+strip "$APP/Contents/MacOS/Notiful"
+echo "    binary: $(ls -lh "$APP/Contents/MacOS/Notiful" | awk '{print $5}')"
 
 # App icon — generate it once if missing.
 if [ ! -f "$ROOT/scripts/AppIcon.icns" ]; then

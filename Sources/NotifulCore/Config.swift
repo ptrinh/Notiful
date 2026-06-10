@@ -99,7 +99,7 @@ public struct Config: Codable, Equatable, Sendable {
     public init(sources: [Source] = Config.defaultSources,
                 defaultOTPRegex: String = Config.defaultRegex,
                 clipboardAutoClearSeconds: Int = 0,
-                pollIntervalSeconds: Double = 15.0) {
+                pollIntervalSeconds: Double = Config.defaultPollInterval) {
         self.sources = sources
         self.defaultOTPRegex = defaultOTPRegex
         self.clipboardAutoClearSeconds = clipboardAutoClearSeconds
@@ -107,8 +107,9 @@ public struct Config: Codable, Equatable, Sendable {
     }
 
     // Default fallback-poll interval. The real-time path is the kqueue file watcher; this timer is
-    // only a safety net, so a sparse interval keeps idle CPU wakeups low.
-    public static let defaultPollInterval = 15.0
+    // only a safety net (the watcher retries arming on its own after a WAL checkpoint), so a sparse
+    // interval keeps idle CPU wakeups minimal.
+    public static let defaultPollInterval = 60.0
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
