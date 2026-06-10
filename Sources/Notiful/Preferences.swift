@@ -10,6 +10,14 @@ enum Preferences {
         static let notificationsEnabled = "notificationsEnabled"
         static let instantCapture = "instantCapture"
         static let autoDismissSourceBanner = "autoDismissSourceBanner"
+        static let maskCodeInBanner = "maskCodeInBanner"
+    }
+
+    /// Hide the code itself in Notiful's banner ("Click to copy" only) — keeps codes off the lock
+    /// screen and out of Notification Center history. Also bound from SwiftUI via @AppStorage.
+    static var maskCodeInBanner: Bool {
+        get { defaults.bool(forKey: Key.maskCodeInBanner) }
+        set { defaults.set(newValue, forKey: Key.maskCodeInBanner) }
     }
 
     /// Read on-screen banners via Accessibility for instant capture (vs the ~5s database delay).

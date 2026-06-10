@@ -34,11 +34,14 @@ public final class NotifulScanner {
 
     /// Scan for NEW matching codes (newer than the watermark and launch time). De-dupes via StateStore.
     /// Returns detections oldest-first and advances the watermark.
-    public func scanNew(limit: Int = 30) throws -> [DetectedCode] {
+    public func scanNew() throws -> [DetectedCode] {
         // Filter in SQL by the watermark so we only DECODE genuinely new records — on an idle/fallback
-        // scan this returns 0 rows instead of decoding the newest `limit` bplists every time.
+        // scan this returns 0 rows instead of decoding bplists every time. No row cap: a burst of
+        // notifications bigger than any fixed limit must not advance the watermark past unseen rows.
+        // The launchDate filter keeps the very first scan (watermark 0) from decoding the whole DB.
         let after = state.map { $0.state.lastRecID }
-        let records = try database.fetchRecords(afterRecID: after, limit: limit)  // newest-first
+        let records = try database.fetchRecords(afterRecID: after,
+                                                afterDate: launchDate > 0 ? launchDate : nil)
         var detections: [DetectedCode] = []
         for rec in records.reversed() {  // process oldest-first so watermark advances correctly
             if rec.deliveredDate < launchDate { continue }
@@ -47,8 +50,9 @@ public final class NotifulScanner {
                 detections.append(detection)
             }
             // Advance watermark for every processed record (matched or not) to avoid re-scanning.
-            state?.markProcessed(recID: rec.recID, deliveredDate: rec.deliveredDate)
+            state?.advance(recID: rec.recID, deliveredDate: rec.deliveredDate)
         }
+        state?.flush()  // one disk write per scan, not per record
         return detections
     }
 

@@ -109,14 +109,45 @@ final class BannerWatcher {
         }
     }
 
+    /// Labels meaning Close/Clear/Dismiss across the locales macOS ships in — banner button labels
+    /// are localized, so English-only matching silently broke auto-dismiss on non-English systems.
+    private static let dismissLabels = [
+        "close", "clear", "dismiss",          // en
+        "đóng", "xóa",                        // vi
+        "fermer", "effacer",                  // fr
+        "schließen", "entfernen",             // de
+        "cerrar", "borrar",                   // es
+        "fechar", "limpar",                   // pt
+        "chiudi", "cancella",                 // it
+        "sluit", "wis",                       // nl
+        "закрыть", "очистить",                // ru
+        "閉じる", "消去",                       // ja
+        "关闭", "清除", "關閉",                  // zh
+        "닫기", "지우기",                       // ko
+        "kapat", "temizle",                   // tr
+        "tutup", "hapus",                     // id
+        "ปิด", "ล้าง",                          // th
+        "إغلاق", "مسح",                       // ar
+    ]
+
     private func dismiss(_ element: AXUIElement) {
         // Best-effort: find a Close/Clear button in the banner and press it.
         var buttons: [AXUIElement] = []
         collectButtons(element, depth: 0, into: &buttons)
+
+        // Prefer the structural close button (subrole is locale-independent).
+        for b in buttons {
+            if let subrole = stringAttr(b, kAXSubroleAttribute),
+               subrole == (kAXCloseButtonSubrole as String) {
+                AXUIElementPerformAction(b, kAXPressAction as CFString)
+                return
+            }
+        }
+        // Fall back to matching the (localized) label text.
         for b in buttons {
             let label = ((stringAttr(b, kAXDescriptionAttribute) ?? "")
                 + " " + (stringAttr(b, kAXTitleAttribute) ?? "")).lowercased()
-            if label.contains("close") || label.contains("clear") || label.contains("dismiss") {
+            if Self.dismissLabels.contains(where: { label.contains($0) }) {
                 AXUIElementPerformAction(b, kAXPressAction as CFString)
                 return
             }

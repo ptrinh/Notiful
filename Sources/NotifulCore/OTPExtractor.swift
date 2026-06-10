@@ -9,9 +9,40 @@ import Foundation
 ///  - With no keyword nearby, we fall back to the first "clean" candidate that is NOT embedded in a
 ///    larger number (phone, date, decimal) and not prefixed by a currency symbol.
 public enum OTPExtractor {
+    /// Keywords that mark a nearby digit run as an OTP. Matched case-insensitively as substrings,
+    /// so stems cover their inflections (e.g. "verif" covers verification/verify/vérification).
     static let keywords = [
+        // English
         "code", "verification", "verify", "passcode", "one-time", "one time",
-        "otp", "2fa", "pin", "security", "confirmation", "access", "auth"
+        "otp", "2fa", "pin", "security", "confirmation", "access", "auth",
+        // Vietnamese
+        "mã", "xác minh", "xác nhận", "mật khẩu",
+        // Spanish / Portuguese
+        "código", "codigo", "verificación", "verificação", "verificacao", "clave", "contraseña",
+        // French (code/verification stems shared with English)
+        "vérification",
+        // German
+        "bestätigung", "einmal", "kennwort",
+        // Italian
+        "codice", "verifica",
+        // Indonesian / Malay
+        "kode", "verifikasi",
+        // Turkish
+        "doğrulama", "şifre",
+        // Russian / Ukrainian
+        "код", "подтвержд", "пароль",
+        // Japanese
+        "認証", "確認", "コード", "ワンタイム",
+        // Chinese (simplified + traditional)
+        "验证码", "驗證碼", "验证", "驗證", "动态码",
+        // Korean
+        "인증", "코드", "비밀번호",
+        // Arabic
+        "رمز", "تحقق",
+        // Hindi
+        "कोड", "सत्यापन",
+        // Thai
+        "รหัส", "ยืนยัน",
     ]
 
     /// Combine the fields a code might live in. Body first (most common), then title/subtitle.
@@ -20,27 +51,41 @@ public enum OTPExtractor {
     }
 
     public static func extract(title: String, subtitle: String, body: String, regex: String? = nil) -> String? {
-        let text = combinedText(title: title, subtitle: subtitle, body: body)
         if let custom = regex, !custom.isEmpty {
-            return firstMatch(custom, in: text)
+            return firstMatch(custom, in: combinedText(title: title, subtitle: subtitle, body: body))
         }
 
-        let ns = text as NSString
-        let lower = text.lowercased() as NSString
-        let cands = candidates(in: text)
-        if cands.isEmpty { return nil }
+        // Score each field SEPARATELY, body first. The body is where codes live; the title usually
+        // holds the sender — and for SMS short codes the sender is itself a 5-6 digit number
+        // (e.g. "35127"), which sat right next to the body's trailing "…code" when the fields were
+        // joined into one string and so out-scored the real code. Per-field scoring keeps a
+        // keyword-backed candidate in the body ahead of any digits in the title.
+        let fields = [body, title, subtitle].filter { !$0.isEmpty }
+        for field in fields {
+            if let code = keywordCandidate(in: field) { return code }
+        }
+        for field in fields {
+            if let code = cleanCandidate(in: field) { return code }
+        }
+        return nil
+    }
 
-        // Prefer a candidate sitting next to a keyword.
+    /// The candidate closest to an OTP keyword within one field, if any.
+    static func keywordCandidate(in text: String) -> String? {
+        let lower = text.lowercased() as NSString
         var best: (code: String, dist: Int)?
-        for (code, range) in cands {
+        for (code, range) in candidates(in: text) {
             if let d = nearestKeywordDistance(lower: lower, range: range) {
                 if best == nil || d < best!.dist { best = (code, d) }
             }
         }
-        if let best = best { return best.code }
+        return best?.code
+    }
 
-        // Fallback: first candidate that is not part of a larger number / not a currency amount.
-        for (code, range) in cands {
+    /// The first candidate that is not part of a larger number / not a currency amount.
+    static func cleanCandidate(in text: String) -> String? {
+        let ns = text as NSString
+        for (code, range) in candidates(in: text) {
             if isEmbeddedInLargerNumber(text: ns, range: range) { continue }
             if hasCurrencyPrefix(text: ns, range: range) { continue }
             return code

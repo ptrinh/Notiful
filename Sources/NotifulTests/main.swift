@@ -60,6 +60,21 @@ t.test("OTP keyword biasing over phone") {
     t.equal(ex("From 415-555-0199: your code is 663201"), "663201", "prefers code near keyword")
 }
 
+t.test("OTP short-code sender in title must not win (regression)") {
+    // Real case: SMS from short code 35127; the sender digits sat in the title right next to the
+    // body's trailing "…code" in the old joined-text scoring and beat the real code.
+    t.equal(ex("749088 is your Link verification code", title: "35127"), "749088", "body code beats short-code sender")
+    t.equal(ex("Your verification code is 482113", title: "28847"), "482113", "another short-code sender")
+    // Title digits still win when the body has nothing.
+    t.equal(ex("", title: "Your code is 9981"), "9981", "code in title when body empty")
+}
+
+t.test("OTP multilingual keywords") {
+    t.equal(ex("Mã xác minh của bạn là 583920"), "583920", "vietnamese")
+    t.equal(ex("Tu código de verificación es 118274"), "118274", "spanish")
+    t.equal(ex("您的验证码为 902817，请勿泄露"), "902817", "chinese")
+}
+
 t.test("OTP real Google-Voice-delivered bodies (captured from live DB)") {
     t.equal(ex("623940 is your verification code from Payoneer"), "623940", "payoneer")
     t.equal(ex("vbassociation.slack.com Slack login code: 978223"), "978223", "slack login")
@@ -141,36 +156,6 @@ t.test("config encodes and decodes") {
     let back = try! JSONDecoder().decode(Config.self, from: data)
     t.equal(back, cfg, "round trip")
     t.assert(!cfg.sources.isEmpty, "ships with default sources")
-}
-
-// ───────────────────────── License verification (offline Ed25519) ─────────────────────────
-t.test("license signs and verifies with matching key") {
-    let keys = LicenseCodec.generateKeyPair()
-    let lic = License(email: "buyer@example.com", edition: "pro")
-    let str = try! LicenseCodec.sign(lic, privateKeyHex: keys.privateKeyHex)
-    let back = try! LicenseCodec.verify(str, publicKeyHex: keys.publicKeyHex)
-    t.equal(back.email, "buyer@example.com", "email round-trips")
-    t.equal(back.edition, "pro", "edition round-trips")
-}
-
-t.test("license rejects wrong public key") {
-    let keys = LicenseCodec.generateKeyPair()
-    let other = LicenseCodec.generateKeyPair()
-    let str = try! LicenseCodec.sign(License(email: "a@b.com"), privateKeyHex: keys.privateKeyHex)
-    var threw = false
-    do { _ = try LicenseCodec.verify(str, publicKeyHex: other.publicKeyHex) } catch { threw = true }
-    t.assert(threw, "verification fails against a different key")
-}
-
-t.test("license rejects tampering and malformed input") {
-    let keys = LicenseCodec.generateKeyPair()
-    let str = try! LicenseCodec.sign(License(email: "a@b.com"), privateKeyHex: keys.privateKeyHex)
-    var tamperThrew = false
-    do { _ = try LicenseCodec.verify(str + "x", publicKeyHex: keys.publicKeyHex) } catch { tamperThrew = true }
-    t.assert(tamperThrew, "tampered signature rejected")
-    var malformedThrew = false
-    do { _ = try LicenseCodec.verify("not-a-license", publicKeyHex: keys.publicKeyHex) } catch { malformedThrew = true }
-    t.assert(malformedThrew, "malformed string rejected")
 }
 
 exit(Int32(t.summary()))

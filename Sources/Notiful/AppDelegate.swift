@@ -20,8 +20,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Codes acted on recently (in memory), to de-dupe the instant Accessibility path against the
     /// slower database path so the same code isn't handled twice.
     private var recentlyActed: [(code: String, at: Date)] = []
-    /// Last code we acted on, for the menu's status header (source name + when).
-    private var lastCapture: (source: String, at: Date)?
+    /// Codes we acted on this session (newest first, capped), so a missed banner is recoverable
+    /// straight from the menu: "Copy last code" + a Recent Codes submenu.
+    private var recentCodes: [(code: String, source: String, at: Date)] = []
+    private let recentCodesCap = 5
 
     private let categoryID = "NOTIFUL_OTP"
     private let copyAction = "COPY"
@@ -33,7 +35,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         config = ConfigStore.loadOrCreate()
-        Licensing.startTrialClockIfNeeded()
         setupStatusItem()
         setupNotifications()
 
@@ -51,13 +52,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             FDA.printInstructions()
             updateStatusIcon(ok: false)
             notifyFDARequired()
+            startFDARetryTimer()  // auto-start the moment access is granted — no relaunch needed
             return
         }
+        finishStartup(db: db)
+    }
 
+    /// Everything that needs Full Disk Access — called at launch, or later by the retry timer the
+    /// moment the user grants access in System Settings.
+    private func finishStartup(db: NotificationDatabase) {
         scanner = NotifulScanner(database: db, config: config, state: state, launchDate: launchDate, excludeBundleIDs: [ownBundleID])
-        startWatching(dbURL: dbURL)
+        startWatching(dbURL: db.sourceURL)
         tryStartBannerWatcher()
+        updateStatusIcon(ok: true)
+        rebuildMenu()
         NotifulLog.info("Notiful started. Watching \(config.sources.count) source(s).")
+    }
+
+    // MARK: - Full Disk Access recovery
+
+    private var fdaRetryTimer: DispatchSourceTimer?
+
+    /// Poll for Full Disk Access while it's missing. Previously the app silently required a manual
+    /// relaunch after granting; now it springs to life by itself within a few seconds.
+    private func startFDARetryTimer() {
+        guard fdaRetryTimer == nil else { return }
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now() + 3, repeating: 3, leeway: .seconds(1))
+        t.setEventHandler { [weak self] in
+            guard let self = self, let db = self.database, db.canRead() else { return }
+            self.fdaRetryTimer?.cancel()
+            self.fdaRetryTimer = nil
+            self.finishStartup(db: db)
+            NotifulLog.info("Full Disk Access granted — watching started without relaunch.")
+            // Swap the "needs access" notification for a ready confirmation.
+            let center = UNUserNotificationCenter.current()
+            center.removeDeliveredNotifications(withIdentifiers: ["fda"])
+            let content = UNMutableNotificationContent()
+            content.title = "Notiful is ready"
+            content.body = "Full Disk Access granted — now watching for codes."
+            center.add(UNNotificationRequest(identifier: "fda-ok", content: content, trigger: nil),
+                       withCompletionHandler: nil)
+        }
+        fdaRetryTimer = t
+        t.resume()
     }
 
     private func startWatching(dbURL: URL) {
@@ -70,22 +108,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // MARK: - Scanning
 
+    /// Serial queue for all DB work (copy + SQLite + bplist decoding). Keeping it off the main
+    /// thread means the menu and config window can never stall behind a multi-MB DB copy.
+    /// The scanner and its StateStore are only ever touched from this queue.
+    private let scanQueue = DispatchQueue(label: "com.notiful.scan", qos: .utility)
+    /// Accessed on scanQueue only.
     private var lastChangeStamp: TimeInterval = 0
 
     private func scan() {
-        guard enabled, let scanner = scanner else { return }
-        // Cheap guard: if the DB/WAL hasn't changed since our last scan, skip the copy+query entirely.
-        // This makes idle timer ticks cost only a stat() instead of copying the DB.
-        if let db = database {
+        guard enabled, let scanner = scanner, let db = database else { return }
+        scanQueue.async { [weak self] in
+            guard let self = self else { return }
+            // Cheap guard: if the DB/WAL hasn't changed since our last scan, skip the copy+query
+            // entirely. This makes idle timer ticks cost only a stat() instead of copying the DB.
             let stamp = db.changeStamp()
-            if stamp != 0 && stamp == lastChangeStamp { return }
-            lastChangeStamp = stamp
-        }
-        do {
-            let detections = try scanner.scanNew()
-            for d in detections { handle(d) }
-        } catch {
-            NotifulLog.error("scan failed: \(error)")
+            if stamp != 0 && stamp == self.lastChangeStamp { return }
+            do {
+                let detections = try scanner.scanNew()
+                // Only advance the stamp once the scan succeeded, so a transient copy/open failure
+                // is retried on the next tick instead of waiting for the next DB change.
+                self.lastChangeStamp = stamp
+                guard !detections.isEmpty else { return }
+                DispatchQueue.main.async {
+                    for d in detections { self.handle(d) }
+                }
+            } catch {
+                NotifulLog.error("scan failed: \(error)")
+            }
         }
     }
 
@@ -95,7 +144,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func handle(_ detection: DetectedCode, via: String = "database (~5s delay)") -> Bool {
         guard !actedRecently(detection.code) else { return false }
         NotifulLog.event("Captured \(detection.source.name) code \(NotifulLog.mask(detection.code)) — \(via)")
-        lastCapture = (detection.source.name, Date())
+        recentCodes.insert((detection.code, detection.source.name, Date()), at: 0)
+        if recentCodes.count > recentCodesCap { recentCodes.removeLast() }
 
         let actions = detection.source.actions
         if actions.autoCopy {
@@ -239,7 +289,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func postNotification(for detection: DetectedCode) {
         guard Preferences.notificationsEnabled else { return }
         let content = UNMutableNotificationContent()
-        content.title = "\(detection.source.name) · \(detection.code)"
+        if Preferences.maskCodeInBanner {
+            // Keep the code itself off the lock screen / Notification Center history.
+            content.title = "\(detection.source.name) code received"
+        } else {
+            content.title = "\(detection.source.name) · \(detection.code)"
+        }
         content.body = "Click to copy"
         content.categoryIdentifier = categoryID
         var info: [String: Any] = [codeKey: detection.code]
@@ -248,9 +303,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         content.userInfo = info
 
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request) { error in
+        let identifier = UUID().uuidString
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+        let center = UNUserNotificationCenter.current()
+        center.add(request) { error in
             if let error = error { NotifulLog.error("post notification: \(error)") }
+        }
+        // OTPs are short-lived; don't leave them sitting in Notification Center history.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
+            center.removeDeliveredNotifications(withIdentifiers: [identifier])
         }
     }
 
@@ -361,10 +422,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func populateMenu(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        // Health warning at the very top, only when notifications are actually disabled in Settings.
+        // Health warnings at the very top, only when something is actually broken.
         if Preferences.notificationsEnabled && !notificationsAuthorized {
             let w = NSMenuItem(title: "⚠️ Banners are turned off in macOS — open Settings",
                                action: #selector(openNotificationSettings), keyEquivalent: "")
+            w.target = self
+            menu.addItem(w)
+            menu.addItem(.separator())
+        }
+        // Instant capture is on but Accessibility isn't granted (e.g. revoked by an app update) —
+        // codes silently fall back to the ~5s database path, so surface it.
+        if Preferences.instantCapture && !Accessibility.isTrusted() {
+            let w = NSMenuItem(title: "⚠️ Instant capture needs Accessibility — open Settings",
+                               action: #selector(openAccessibilitySettings), keyEquivalent: "")
             w.target = self
             menu.addItem(w)
             menu.addItem(.separator())
@@ -373,6 +443,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // Status header (non-clickable): what Notiful is doing right now.
         addStatusHeader(menu)
         menu.addItem(.separator())
+
+        // Captured codes — recoverable even if the banner was missed.
+        if let last = recentCodes.first {
+            let copy = NSMenuItem(title: "Copy Last Code — \(last.code) (\(last.source))",
+                                  action: #selector(copyRecentCode(_:)), keyEquivalent: "c")
+            copy.target = self
+            copy.representedObject = last.code
+            copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+            menu.addItem(copy)
+
+            if recentCodes.count > 1 {
+                let recentItem = NSMenuItem(title: "Recent Codes", action: nil, keyEquivalent: "")
+                let sub = NSMenu()
+                for entry in recentCodes {
+                    let item = NSMenuItem(title: "\(entry.code) — \(entry.source) · \(Self.relativeTime(since: entry.at))",
+                                          action: #selector(copyRecentCode(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = entry.code
+                    sub.addItem(item)
+                }
+                recentItem.submenu = sub
+                menu.addItem(recentItem)
+            }
+            menu.addItem(.separator())
+        }
 
         // Primary on/off, with an explicit object so it's never an ambiguous bare verb.
         let toggle = NSMenuItem(title: enabled ? "Pause watching" : "Resume watching",
@@ -407,7 +502,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         login.state = isLoginEnabled() ? .on : .off
         menu.addItem(login)
 
-        addItem(menu, "Sources & advanced settings…", #selector(openConfigUI))
+        addItem(menu, "Sources & Settings…", #selector(openConfigUI), key: ",")
         menu.addItem(.separator())
 
         // --- Troubleshooting group ---
@@ -419,15 +514,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         addItem(menu, "Hide menu bar icon…", #selector(hideIcon))
         menu.addItem(.separator())
 
-        // Licensing: keep it soft — offer to buy / enter a key, never gate.
-        if Licensing.isLicensed {
-            addItem(menu, "Remove License…", #selector(removeLicense))
-        } else {
-            addItem(menu, "Buy a License…", #selector(buyLicense))
-            addItem(menu, "Enter License…", #selector(enterLicense))
-        }
-        menu.addItem(.separator())
-
+        addItem(menu, "Donate ♥…", #selector(donate))
         addItem(menu, "About Notiful", #selector(showCredit))
         addItem(menu, "Quit Notiful", #selector(quit), key: "q")
     }
@@ -440,10 +527,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             : "Paused"
         menu.addItem(disabledItem(enabled ? "● \(state)" : "⏸ \(state)"))
 
-        if let last = lastCapture {
+        if let last = recentCodes.first {
             menu.addItem(disabledItem("Last code: \(last.source) · \(Self.relativeTime(since: last.at))", indent: 1))
         }
-        menu.addItem(disabledItem(Licensing.menuStatusLine, indent: 1))
     }
 
     /// A bold, greyed-out section label.
@@ -494,6 +580,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(item)
     }
 
+    @objc private func copyRecentCode(_ sender: NSMenuItem) {
+        guard let code = sender.representedObject as? String else { return }
+        Clipboard.copy(code)
+        scheduleAutoClear(code)
+        NotifulLog.info("Copied a recent code from the menu")
+    }
+
     @objc private func toggleEnabled() {
         enabled.toggle()
         NotifulLog.info(enabled ? "Enabled" : "Disabled")
@@ -510,6 +603,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func openLog() {
         // Console can't be opened pre-filtered to our subsystem, which left users in an unfiltered
         // firehose. Instead export just Notiful's recent log lines to a text file and open that.
+        // `log show` takes several seconds, so post a progress notification — without it the menu
+        // item looks like it did nothing.
+        let progressID = "log-progress"
+        let center = UNUserNotificationCenter.current()
+        let progress = UNMutableNotificationContent()
+        progress.title = "Collecting Notiful’s log…"
+        progress.body = "This takes a few seconds — the log will open automatically."
+        center.add(UNNotificationRequest(identifier: progressID, content: progress, trigger: nil),
+                   withCompletionHandler: nil)
+
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("Notiful-log.txt")
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/log")
@@ -522,10 +625,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let body = data.isEmpty ? "No Notiful log entries in the last 6 hours." : String(decoding: data, as: UTF8.self)
             let header = "Notiful log — last 6 hours\n\n"
             try? (header + body).data(using: .utf8)?.write(to: out)
-            DispatchQueue.main.async { NSWorkspace.shared.open(out) }
+            DispatchQueue.main.async {
+                center.removeDeliveredNotifications(withIdentifiers: [progressID])
+                NSWorkspace.shared.open(out)
+            }
         }
         do { try task.run() } catch {
             NotifulLog.error("open log: \(error)")
+            center.removeDeliveredNotifications(withIdentifiers: [progressID])
         }
     }
 
@@ -577,6 +684,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func grantFDA() { FDA.openSettings() }
 
+    @objc private func openAccessibilitySettings() { Accessibility.openSettings() }
+
     @objc private func openNotificationSettings() {
         let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")
             ?? URL(string: "x-apple.systempreferences:com.apple.preference.notifications")!
@@ -585,49 +694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func showCredit() { Welcome.showIfNeeded(force: true) }
 
-    @objc private func buyLicense() { NSWorkspace.shared.open(Licensing.purchaseURL) }
-
-    @objc private func enterLicense() {
-        let alert = NSAlert()
-        alert.messageText = "Enter your Notiful license"
-        alert.informativeText = "Paste the license key from your purchase confirmation."
-        alert.addButton(withTitle: "Activate")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 48))
-        field.placeholderString = "NOTIFUL1.…"
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        do {
-            let email = try Licensing.activate(field.stringValue)
-            rebuildMenu()
-            let ok = NSAlert()
-            ok.messageText = "Thank you — Notiful is now licensed"
-            ok.informativeText = "Licensed to \(email)."
-            ok.addButton(withTitle: "OK")
-            ok.runModal()
-        } catch {
-            let bad = NSAlert()
-            bad.alertStyle = .warning
-            bad.messageText = "That license key isn’t valid"
-            bad.informativeText = "Check that you pasted the whole key. If it still fails, contact support with your purchase email."
-            bad.addButton(withTitle: "OK")
-            bad.runModal()
-        }
-    }
-
-    @objc private func removeLicense() {
-        let confirm = NSAlert()
-        confirm.messageText = "Remove the license from this Mac?"
-        confirm.informativeText = "Notiful keeps working, but returns to the unlicensed reminder. You can re-enter the key anytime."
-        confirm.addButton(withTitle: "Remove")
-        confirm.addButton(withTitle: "Cancel")
-        guard confirm.runModal() == .alertFirstButtonReturn else { return }
-        Licensing.deactivate()
-        rebuildMenu()
-    }
+    @objc private func donate() { NSWorkspace.shared.open(Welcome.donationURL) }
 
     private var configWindow: ConfigWindowController?
 
@@ -642,10 +709,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func applyConfig(_ newConfig: Config) {
+        let pollChanged = newConfig.pollIntervalSeconds != config.pollIntervalSeconds
         config = newConfig
         ConfigStore.save(newConfig)
-        if let db = database {
+        if let db = database, db.canRead() {
             scanner = NotifulScanner(database: db, config: config, state: state, launchDate: launchDate, excludeBundleIDs: [ownBundleID])
+            if pollChanged {  // restart the watcher so the new interval applies without relaunch
+                watcher?.stop()
+                startWatching(dbURL: db.sourceURL)
+            }
         }
         NotifulLog.info("Config updated: \(config.sources.count) source(s)")
     }

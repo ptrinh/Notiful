@@ -30,14 +30,29 @@ public final class StateStore {
         recID <= state.lastRecID
     }
 
-    /// Advance the watermark to this record (only moves forward).
+    /// Advance the watermark to this record (only moves forward) and persist immediately.
     public func markProcessed(recID: Int64, deliveredDate: Double) {
+        advance(recID: recID, deliveredDate: deliveredDate)
+        flush()
+    }
+
+    /// Advance the watermark WITHOUT writing to disk — call `flush()` once after a batch.
+    public func advance(recID: Int64, deliveredDate: Double) {
         if recID > state.lastRecID {
             state.lastRecID = recID
             state.lastDeliveredDate = deliveredDate
-            persist()
+            dirty = true
         }
     }
+
+    /// Write the state to disk if it changed since the last persist.
+    public func flush() {
+        guard dirty else { return }
+        persist()
+        dirty = false
+    }
+
+    private var dirty = false
 
     private func persist() {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
