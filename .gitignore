@@ -1,6 +1,7 @@
 .build/
 .swiftpm/
-Notiful.app/
-Notiful.zip
+# Build artifacts — the glob also catches iCloud's "Notiful 2.app" / "Notiful 3.zip" duplicates.
+Notiful*.app/
+Notiful*.zip
 *.xcodeproj
 .DS_Store
