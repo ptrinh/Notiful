@@ -10,6 +10,12 @@ macOS only autofills codes from its own Messages and Mail. Codes that arrive any
 
 ---
 
+## Demo
+
+https://github.com/ptrinh/Notiful/raw/main/Screenshots/demo.mp4
+
+---
+
 ## Screenshots
 
 | A detected code (click to copy) | The menu | Add sources visually |
