@@ -55,18 +55,12 @@ public enum OTPExtractor {
             return firstMatch(custom, in: combinedText(title: title, subtitle: subtitle, body: body))
         }
 
-        // Score each field SEPARATELY, body first. The body is where codes live; the title usually
-        // holds the sender — and for SMS short codes the sender is itself a 5-6 digit number
-        // (e.g. "35127"), which sat right next to the body's trailing "…code" when the fields were
-        // joined into one string and so out-scored the real code. Per-field scoring keeps a
-        // keyword-backed candidate in the body ahead of any digits in the title.
-        let fields = [body, title, subtitle].filter { !$0.isEmpty }
-        for field in fields {
-            if let code = keywordCandidate(in: field) { return code }
-        }
-        for field in fields {
-            if let code = cleanCandidate(in: field) { return code }
-        }
+        // Extract from the BODY only. The title/subtitle hold the sender, and for SMS short codes
+        // (Google Voice, etc.) the sender is itself a 5-6 digit number (e.g. "35127"). When the
+        // message isn't an OTP at all, that sender number in the title used to be picked up as a
+        // false OTP. Codes always live in the body, so we ignore title/subtitle entirely.
+        if let code = keywordCandidate(in: body) { return code }
+        if let code = cleanCandidate(in: body) { return code }
         return nil
     }
 

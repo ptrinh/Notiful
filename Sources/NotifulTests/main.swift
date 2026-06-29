@@ -45,7 +45,6 @@ t.test("OTP positives") {
     t.equal(ex("Login code: 51924. Do not give this code to anyone."), "51924", "telegram")
     t.equal(ex("Your WhatsApp code: 729-301\nDon't share it."), "729301", "whatsapp split")
     t.equal(ex("Your verification code is 12345678"), "12345678", "8-digit")
-    t.equal(ex("", title: "Your code is 9981"), "9981", "code in title")
     t.equal(ex("482915 is your one-time passcode"), "482915", "keyword after digits")
 }
 
@@ -65,8 +64,10 @@ t.test("OTP short-code sender in title must not win (regression)") {
     // body's trailing "…code" in the old joined-text scoring and beat the real code.
     t.equal(ex("749088 is your Link verification code", title: "35127"), "749088", "body code beats short-code sender")
     t.equal(ex("Your verification code is 482113", title: "28847"), "482113", "another short-code sender")
-    // Title digits still win when the body has nothing.
-    t.equal(ex("", title: "Your code is 9981"), "9981", "code in title when body empty")
+    // A non-OTP message from a 5-digit short-code sender must yield nothing — the sender's digits
+    // live only in the title, and we extract from the body alone.
+    t.nilCheck(ex("Are we still on for lunch tomorrow?", title: "35127"), "short-code sender in title is not an OTP")
+    t.nilCheck(ex("", title: "Your code is 9981"), "title is never scanned for codes")
 }
 
 t.test("OTP multilingual keywords") {

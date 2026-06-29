@@ -153,7 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             scheduleAutoClear(detection.code)
         }
         if actions.showActionableNotification {
-            postNotification(for: detection)
+            postNotification(for: detection, copied: actions.autoCopy)
         }
         if let command = actions.runCommand, !command.isEmpty {
             CommandRunner.run(command, detection: detection)
@@ -294,7 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         refreshNotificationAuth()
     }
 
-    private func postNotification(for detection: DetectedCode) {
+    private func postNotification(for detection: DetectedCode, copied: Bool = false) {
         guard Preferences.notificationsEnabled else { return }
         let content = UNMutableNotificationContent()
         if Preferences.maskCodeInBanner {
@@ -303,7 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         } else {
             content.title = "\(detection.source.name) · \(detection.code)"
         }
-        content.body = "Click to copy"
+        content.body = copied ? "Copied to clipboard" : "Click to copy"
         content.categoryIdentifier = categoryID
         var info: [String: Any] = [codeKey: detection.code]
         if detection.source.actions.openButton, let target = detection.source.actions.openTarget {
