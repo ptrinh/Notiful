@@ -12,7 +12,7 @@ macOS only autofills codes from its own Messages and Mail. Codes that arrive any
 
 ## Demo
 
-https://github.com/ptrinh/Notiful/raw/main/Screenshots/demo.mp4
+![Notiful detecting a Google Voice code](Screenshots/demo.gif)
 
 ---
 
