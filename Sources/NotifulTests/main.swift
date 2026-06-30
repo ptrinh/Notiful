@@ -159,4 +159,206 @@ t.test("config encodes and decodes") {
     t.assert(!cfg.sources.isEmpty, "ships with default sources")
 }
 
+// ───────────────────────── OTP extraction (edge cases) ─────────────────────────
+t.test("OTP space-split candidate") {
+    t.equal(ex("Your code 123 456 expires soon"), "123456", "space-separated pair joined")
+}
+
+t.test("OTP rejects non-USD currency amounts (no keyword)") {
+    // hasCurrencyPrefix covers $ € £ ¥ ₫ ₩ — only $ was previously exercised.
+    t.nilCheck(ex("Balance updated: ₫50000 available"), "dong amount")
+    t.nilCheck(ex("Charged £12345 to your card today"), "pound amount")
+}
+
+t.test("OTP rejects digits embedded in a longer number") {
+    t.nilCheck(ex("Order reference 1234567890123 confirmed"), "13-digit id is not an OTP")
+}
+
+t.test("OTP 3-digit run is too short, 4 is the floor") {
+    t.nilCheck(ex("Press 123 to continue"), "3 digits rejected")
+    t.equal(ex("Your code is 4521"), "4521", "4 digits is the minimum code")
+}
+
+t.test("OTP custom regex spans all fields (combinedText)") {
+    // The regex path joins body + title + subtitle, so a pattern may match the title.
+    t.equal(OTPExtractor.extract(title: "Acme 9921", subtitle: "", body: "Use the code below",
+                                 regex: #"Acme (\d{4})"#), "9921", "regex matches text in the title")
+}
+
+// ───────────────────────── Source matching (extra criteria) ─────────────────────────
+t.test("matcher titleContains") {
+    let src = Source(name: "GV", match: SourceMatch(titleContains: ["Google Voice"]))
+    t.notNil(SourceMatcher.match(record: rec("com.x", title: "Msg from Google Voice"), sources: [src]), "title substring matches")
+    t.nilCheck(SourceMatcher.match(record: rec("com.x", title: "Telegram"), sources: [src]), "no title match")
+}
+
+t.test("matcher senderContains is case-insensitive") {
+    let src = Source(name: "GV", match: SourceMatch(senderContains: ["google voice"]))
+    t.notNil(SourceMatcher.match(record: rec("com.x", title: "GOOGLE VOICE"), sources: [src]), "case-insensitive sender")
+}
+
+t.test("matcher bodyContains gate is case-insensitive") {
+    let src = Source(name: "GV", match: SourceMatch(titleContains: ["GV"], bodyContains: ["CODE"]))
+    t.notNil(SourceMatcher.match(record: rec("x", title: "GV", body: "your code is 12"), sources: [src]),
+             "lowercase body satisfies an uppercase needle")
+}
+
+// ───────────────────────── NotificationRecord / BPlistDecoder ─────────────────────────
+t.test("record sender is the title") {
+    t.equal(rec("x", title: "From GV").sender, "From GV", "sender == title")
+}
+
+t.test("decoder falls back to top-level fields when there is no req dict") {
+    let plist: [String: Any] = ["app": "com.x", "titl": "Hello", "subt": "", "body": "code 4321"]
+    let data = try! PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0)
+    let r = BPlistDecoder.decode(data: data, recID: 2, bundleID: "com.x", deliveredDate: 0)
+    t.equal(r?.title, "Hello", "title from top level")
+    t.assert(r?.body.contains("4321") ?? false, "body from top level")
+}
+
+t.test("decoder accepts a title-only record") {
+    let plist: [String: Any] = ["req": ["titl": "Just a title", "subt": "", "body": ""]]
+    let data = try! PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0)
+    t.notNil(BPlistDecoder.decode(data: data, recID: 1, bundleID: "x", deliveredDate: 0), "title-only is actionable")
+}
+
+// ───────────────────────── NotifulLog.mask (never leak a full code) ─────────────────────────
+t.test("log masks codes for display") {
+    t.equal(NotifulLog.mask("318204"), "3••••4", "keeps first/last, dots between")
+    t.equal(NotifulLog.mask("4521"), "4••1", "4-digit")
+    t.equal(NotifulLog.mask("123"), "1•3", "3-digit")
+    t.equal(NotifulLog.mask("12"), "••", "2 chars fully masked")
+    t.equal(NotifulLog.mask("7"), "•", "1 char fully masked")
+    t.equal(NotifulLog.mask(""), "", "empty stays empty")
+}
+
+// ───────────────────────── Config tolerant decoding ─────────────────────────
+t.test("config decodes an empty object to safe defaults") {
+    let cfg = try! JSONDecoder().decode(Config.self, from: Data("{}".utf8))
+    t.assert(!cfg.sources.isEmpty, "missing sources -> default sources")
+    t.equal(cfg.defaultOTPRegex, Config.defaultRegex, "missing regex -> default")
+    t.equal(cfg.pollIntervalSeconds, Config.defaultPollInterval, "missing interval -> default")
+    t.equal(cfg.clipboardAutoClearSeconds, 0, "missing auto-clear -> 0")
+}
+
+t.test("source decodes with omitted match/actions to defaults") {
+    let src = try! JSONDecoder().decode(Source.self, from: Data(#"{"name":"X"}"#.utf8))
+    t.equal(src.name, "X", "name decoded")
+    t.equal(src.actions, SourceActions(), "actions fall back to defaults")
+}
+
+t.test("SourceActions tolerant decode keeps the safe defaults") {
+    let a = try! JSONDecoder().decode(SourceActions.self, from: Data("{}".utf8))
+    t.assert(!a.autoCopy, "autoCopy off by default")
+    t.assert(a.showActionableNotification, "notifications on by default")
+    t.assert(!a.openButton, "open button off by default")
+}
+
+// ───────────────────────── StateStore (watermark + write batching) ─────────────────────────
+func tempStateURL() -> URL {
+    FileManager.default.temporaryDirectory.appendingPathComponent("notiful-test-state-\(UUID().uuidString).json")
+}
+
+t.test("StateStore starts at zero") {
+    let s = StateStore(url: tempStateURL())
+    t.equal(s.state.lastRecID, 0, "fresh watermark is 0")
+    t.assert(!s.isProcessed(recID: 5), "unseen record is not processed")
+    t.assert(s.isProcessed(recID: 0), "<= watermark counts as processed")
+}
+
+t.test("StateStore advances forward only") {
+    let s = StateStore(url: tempStateURL())
+    s.advance(recID: 10, deliveredDate: 100)
+    t.equal(s.state.lastRecID, 10, "advanced to 10")
+    s.advance(recID: 5, deliveredDate: 50)
+    t.equal(s.state.lastRecID, 10, "a lower recID never moves the watermark backward")
+    t.assert(s.isProcessed(recID: 10), "10 processed")
+    t.assert(!s.isProcessed(recID: 11), "11 still new")
+}
+
+t.test("StateStore.advance defers the disk write until flush") {
+    let url = tempStateURL()
+    let s = StateStore(url: url)
+    s.advance(recID: 42, deliveredDate: 999)
+    t.equal(StateStore(url: url).state.lastRecID, 0, "advance() alone does not persist")
+    s.flush()
+    let reloaded = StateStore(url: url)
+    t.equal(reloaded.state.lastRecID, 42, "flush() persists the watermark")
+    t.equal(reloaded.state.lastDeliveredDate, 999, "delivered date persisted too")
+}
+
+t.test("StateStore.markProcessed persists immediately") {
+    let url = tempStateURL()
+    StateStore(url: url).markProcessed(recID: 7, deliveredDate: 70)
+    t.equal(StateStore(url: url).state.lastRecID, 7, "markProcessed flushes on the spot")
+}
+
+// ───────────────────────── Scanner.scanNew (incremental scan) ─────────────────────────
+// A stub DB that mimics the real SQL: newest-first, honouring the afterRecID/afterDate filters.
+final class StubDB: NotificationDatabase {
+    let records: [NotificationRecord]
+    init(_ records: [NotificationRecord]) {
+        self.records = records
+        super.init(sourceURL: URL(fileURLWithPath: "/dev/null"))
+    }
+    override func fetchRecords(afterRecID: Int64? = nil, afterDate: Double? = nil, limit: Int? = nil) throws -> [NotificationRecord] {
+        records
+            .filter { afterRecID == nil || $0.recID > afterRecID! }
+            .filter { afterDate == nil || $0.deliveredDate > afterDate! }
+            .sorted { ($0.deliveredDate, $0.recID) > ($1.deliveredDate, $1.recID) }
+    }
+}
+
+let gvSource = Source(name: "Google Voice", match: SourceMatch(senderContains: ["Google Voice"]))
+func gvRecord(_ recID: Int64, code: String, date: Double) -> NotificationRecord {
+    NotificationRecord(recID: recID, bundleID: "com.google.chrome", title: "Google Voice",
+                       subtitle: "", body: "Your code is \(code)", deliveredDate: date)
+}
+
+t.test("scanNew returns matches oldest-first and advances the watermark") {
+    let db = StubDB([gvRecord(1, code: "111111", date: 10),
+                     gvRecord(2, code: "222222", date: 20),
+                     gvRecord(3, code: "333333", date: 30)])
+    let state = StateStore(url: tempStateURL())
+    let scanner = NotifulScanner(database: db, config: Config(sources: [gvSource]), state: state, launchDate: 0)
+    let hits = (try? scanner.scanNew()) ?? []
+    t.equal(hits.map { $0.code }, ["111111", "222222", "333333"], "processed oldest-first")
+    t.equal(state.state.lastRecID, 3, "watermark advanced to the newest record")
+}
+
+t.test("scanNew de-dupes records seen on a previous scan") {
+    let db = StubDB([gvRecord(1, code: "111111", date: 10), gvRecord(2, code: "222222", date: 20)])
+    let state = StateStore(url: tempStateURL())
+    let scanner = NotifulScanner(database: db, config: Config(sources: [gvSource]), state: state, launchDate: 0)
+    _ = try? scanner.scanNew()
+    t.assert(((try? scanner.scanNew()) ?? []).isEmpty, "a second scan finds nothing new")
+}
+
+t.test("scanNew ignores notifications older than launchDate") {
+    let db = StubDB([gvRecord(1, code: "111111", date: 5),    // before launch
+                     gvRecord(2, code: "222222", date: 50)])  // after launch
+    let scanner = NotifulScanner(database: db, config: Config(sources: [gvSource]),
+                                 state: StateStore(url: tempStateURL()), launchDate: 10)
+    t.equal(((try? scanner.scanNew()) ?? []).map { $0.code }, ["222222"], "stale pre-launch code skipped")
+}
+
+t.test("scanNew advances the watermark past unmatched records too (no re-scan)") {
+    let other = NotificationRecord(recID: 5, bundleID: "com.other", title: "Slack", subtitle: "",
+                                   body: "hello 123456", deliveredDate: 25)
+    let db = StubDB([gvRecord(1, code: "111111", date: 10), other])
+    let state = StateStore(url: tempStateURL())
+    let scanner = NotifulScanner(database: db, config: Config(sources: [gvSource]), state: state, launchDate: 0)
+    let hits = (try? scanner.scanNew()) ?? []
+    t.equal(hits.map { $0.code }, ["111111"], "only the Google Voice record matched")
+    t.equal(state.state.lastRecID, 5, "watermark still moved past the unmatched record")
+}
+
+t.test("scanNew handles a burst larger than the old 30-row cap") {
+    // 1.1.0 removed the fixed row cap so a burst can never advance the watermark past unseen rows.
+    let burst = (1...40).map { gvRecord(Int64($0), code: String(format: "%06d", $0), date: Double($0)) }
+    let scanner = NotifulScanner(database: StubDB(burst), config: Config(sources: [gvSource]),
+                                 state: StateStore(url: tempStateURL()), launchDate: 0)
+    t.equal((try? scanner.scanNew())?.count, 40, "all 40 codes in the burst are captured")
+}
+
 exit(Int32(t.summary()))
