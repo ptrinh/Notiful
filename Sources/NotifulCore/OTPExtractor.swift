@@ -76,12 +76,14 @@ public enum OTPExtractor {
         return best?.code
     }
 
-    /// The first candidate that is not part of a larger number / not a currency amount.
+    /// The first candidate that is not part of a larger number / not a currency amount / not a phone.
     static func cleanCandidate(in text: String) -> String? {
         let ns = text as NSString
+        let phones = phoneRanges(in: text)
         for (code, range) in candidates(in: text) {
             if isEmbeddedInLargerNumber(text: ns, range: range) { continue }
             if hasCurrencyPrefix(text: ns, range: range) { continue }
+            if phones.contains(where: { NSIntersectionRange($0, range).length > 0 }) { continue }
             return code
         }
         return nil
@@ -134,6 +136,17 @@ public enum OTPExtractor {
 
     private static let numberSeparators: Set<Character> = ["-", ".", ",", "/", ":", "+"]
     private static let currencySymbols: Set<Character> = ["$", "€", "£", "¥", "₫", "₩"]
+
+    /// Ranges of text that look like phone numbers. The digit-run heuristic can't see these because a
+    /// parenthesized/space-separated area code — "(484) 466-8855" — breaks the digit-adjacency chain
+    /// that `isEmbeddedInLargerNumber` relies on. Matches NANP-style grouping with an optional country
+    /// code and an optional parenthesized area code.
+    static func phoneRanges(in text: String) -> [NSRange] {
+        let pattern = #"(?:\+?\d{1,3}[ .\-]?)?\(?\d{3}\)?[ .\-]\d{3}[ .\-]\d{4}"#
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let ns = text as NSString
+        return re.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { $0.range }
+    }
 
     static func isEmbeddedInLargerNumber(text: NSString, range: NSRange) -> Bool {
         if let before = char(text, range.location - 1), before.isNumber || numberSeparators.contains(before) {

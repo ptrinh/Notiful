@@ -50,6 +50,11 @@ t.test("OTP positives") {
 
 t.test("OTP negatives") {
     t.nilCheck(ex("Call me back at 415-555-0199 when you can"), "phone number")
+    // Google Voice missed-call banner: the whole banner text lands in the body, and the phone
+    // number's "466-8855" tail must not be mistaken for an OTP.
+    t.nilCheck(ex("(484) 466-8855\nMissed call"), "parenthesized phone number")
+    t.nilCheck(ex("Missed call from 484 466 8855"), "space-separated phone number")
+    t.nilCheck(ex("Call +1 (484) 466-8855 back"), "phone with country code")
     t.nilCheck(ex("Your payment of $1,250 was received"), "dollar amount")
     t.nilCheck(ex("See you on 12/25/2026 for the event"), "date")
     t.nilCheck(ex("Thanks for your message, talk soon"), "plain chatter")
