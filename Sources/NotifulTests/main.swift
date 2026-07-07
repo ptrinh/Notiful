@@ -103,6 +103,46 @@ t.test("OTP custom regex") {
     t.equal(ex("token=ABCD12 end", regex: #"[A-Z]{4}\d{2}"#), "ABCD12", "whole match when no group")
 }
 
+// ───────────────────────── Banner field assembly ─────────────────────────
+func line(_ ident: String?, _ value: String) -> BannerFields.Line {
+    BannerFields.Line(identifier: ident, value: value)
+}
+
+t.test("banner fields: tagged lines separate title/subtitle/body") {
+    // Real case (macOS 15): SMS short-code sender "46939" in the banner title was joined into the
+    // body and picked up as a false OTP. With identifiers, only the tagged body is scanned.
+    let f = BannerFields.assemble([
+        line("title", "46939"),
+        line("subtitle", "voice.google.com"),
+        line("body", "Samsonite: There's still time to save with an extra 15% off + FREE Shipping."),
+    ])
+    t.equal(f.title, "46939", "title")
+    t.equal(f.subtitle, "voice.google.com", "subtitle")
+    t.equal(f.body, "Samsonite: There's still time to save with an extra 15% off + FREE Shipping.", "body")
+    t.nilCheck(OTPExtractor.extract(title: f.title, subtitle: f.subtitle, body: f.body),
+               "short-code sender in banner title is not an OTP")
+}
+
+t.test("banner fields: real OTP banner still extracts") {
+    let f = BannerFields.assemble([
+        line("title", "(917) 809-8409"),
+        line("subtitle", "voice.google.com"),
+        line("body", "623940 is your verification code from Payoneer"),
+    ])
+    t.equal(OTPExtractor.extract(title: f.title, subtitle: f.subtitle, body: f.body),
+            "623940", "code from tagged body")
+}
+
+t.test("banner fields: untagged lines fall back to joined text") {
+    let f = BannerFields.assemble([
+        line(nil, "Telegram"),
+        line(nil, "Login code: 51924. Do not give this code to anyone."),
+    ])
+    t.equal(f.body, "Telegram\nLogin code: 51924. Do not give this code to anyone.", "joined fallback body")
+    t.equal(OTPExtractor.extract(title: f.title, subtitle: f.subtitle, body: f.body),
+            "51924", "code still found via fallback")
+}
+
 // ───────────────────────── Source matching ─────────────────────────
 func rec(_ bundle: String, title: String = "", body: String = "") -> NotificationRecord {
     NotificationRecord(recID: 1, bundleID: bundle, title: title, subtitle: "", body: body, deliveredDate: 0)

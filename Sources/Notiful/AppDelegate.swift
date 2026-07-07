@@ -141,8 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Acts on a detection. Returns false (no-op) if this code was already handled recently — this is
     /// what keeps the instant Accessibility path and the slower DB path from double-acting.
     @discardableResult
-    private func handle(_ detection: DetectedCode, via: String = "database (~5s delay)") -> Bool {
-        guard !actedRecently(detection.code) else { return false }
+    private func handle(_ detection: DetectedCode, via: String = "database (~5s delay)", force: Bool = false) -> Bool {
+        // `force` (manual Test) bypasses the de-dup guard so repeated clicks always fire the banner.
+        if !force, actedRecently(detection.code) { return false }
         NotifulLog.event("Captured \(detection.source.name) code \(NotifulLog.mask(detection.code)) — \(via)")
         recentCodes.insert((detection.code, detection.source.name, Date()), at: 0)
         if recentCodes.count > recentCodesCap { recentCodes.removeLast() }
@@ -185,8 +186,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if bannerWatcher?.needsReArm() == false { bannerRetryDelay = 2; return }
 
         if bannerWatcher == nil {
-            bannerWatcher = BannerWatcher { [weak self] texts, dismiss in
-                self?.handleBanner(texts: texts, dismiss: dismiss)
+            bannerWatcher = BannerWatcher { [weak self] lines, dismiss in
+                self?.handleBanner(lines: lines, dismiss: dismiss)
             }
         }
         if bannerWatcher?.start() == true {
@@ -228,16 +229,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         bannerHostKVO = nil
     }
 
-    private func handleBanner(texts: [String], dismiss: @escaping () -> Void) {
+    private func handleBanner(lines: [BannerFields.Line], dismiss: @escaping () -> Void) {
         guard enabled else { return }
-        let joined = texts.joined(separator: "\n")
         // Ignore our own banner (the system shows "Notiful" as its app label) to avoid a loop.
-        if texts.contains(where: { $0 == "Notiful" }) || joined.contains("Notiful · ") { return }
+        if lines.contains(where: { $0.value == "Notiful" || $0.value.contains("Notiful · ") }) { return }
+
+        // Assemble title/subtitle/body from the lines' AX identifiers so extraction can scan the
+        // body only — a short-code SMS sender in the title (e.g. "46939") must never be read as an
+        // OTP. Falls back to joined text when macOS doesn't tag the lines.
+        let fields = BannerFields.assemble(lines)
 
         // The banner doesn't expose the posting app's bundle id, so match on the displayed text.
         // (Native-app-by-bundle-id sources are still covered by the database fallback.)
-        let record = NotificationRecord(recID: -1, bundleID: "", title: joined, subtitle: "",
-                                        body: joined, deliveredDate: Date().timeIntervalSinceReferenceDate)
+        let record = NotificationRecord(recID: -1, bundleID: "",
+                                        title: fields.title, subtitle: fields.subtitle,
+                                        body: fields.body, deliveredDate: Date().timeIntervalSinceReferenceDate)
         guard let source = SourceMatcher.match(record: record, sources: config.sources) else { return }
 
         let code: String?
@@ -709,12 +715,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func openConfigUI() {
         if configWindow == nil {
-            configWindow = ConfigWindowController(database: database, current: config) { [weak self] newConfig in
+            configWindow = ConfigWindowController(database: database, current: config, onSave: { [weak self] newConfig in
                 self?.applyConfig(newConfig)
-            }
+            }, onTest: { [weak self] record in
+                self?.testRecord(record) ?? false
+            })
         }
         configWindow?.refresh(current: config)
         configWindow?.show()
+    }
+
+    /// Replay a recent notification through the full capture pipeline, exactly as if it had just
+    /// arrived (banner, auto-copy, command). Returns true if a code was detected. Mirrors
+    /// `Scanner.detect`'s extraction; `force: true` bypasses the de-dup guard so re-tests always fire.
+    private func testRecord(_ rec: NotificationRecord) -> Bool {
+        guard let source = SourceMatcher.match(record: rec, sources: config.sources) else { return false }
+        let code: String?
+        if let custom = source.otpRegex {
+            code = OTPExtractor.extract(record: rec, regex: custom)
+        } else {
+            code = OTPExtractor.extract(record: rec, regex: nil)
+                ?? OTPExtractor.extract(record: rec, regex: config.defaultOTPRegex)
+        }
+        guard let code = code, !code.isEmpty else { return false }
+        return handle(DetectedCode(code: code, source: source, record: rec), via: "TEST (manual)", force: true)
     }
 
     private func applyConfig(_ newConfig: Config) {

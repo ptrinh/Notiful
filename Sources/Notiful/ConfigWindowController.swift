@@ -8,8 +8,10 @@ final class ConfigWindowController: NSObject {
     private let window: NSWindow
     private let model: ConfigModel
 
-    init(database: NotificationDatabase?, current: Config, onSave: @escaping (Config) -> Void) {
-        model = ConfigModel(database: database, config: current, onSave: onSave)
+    init(database: NotificationDatabase?, current: Config,
+         onSave: @escaping (Config) -> Void,
+         onTest: @escaping (NotificationRecord) -> Bool) {
+        model = ConfigModel(database: database, config: current, onSave: onSave, onTest: onTest)
         let hosting = NSHostingController(rootView: ConfigView().environmentObject(model))
         window = NSWindow(contentViewController: hosting)
         window.title = "Notiful — Sources & Settings"
@@ -46,14 +48,18 @@ final class ConfigModel: ObservableObject {
 
     private let database: NotificationDatabase?
     private let onSave: (Config) -> Void
+    private let onTest: (NotificationRecord) -> Bool
     private let fetchQueue = DispatchQueue(label: "com.notiful.config-fetch", qos: .userInitiated)
     private let ownBundleID = (Bundle.main.bundleIdentifier ?? "com.notiful.app").lowercased()
     private var appNameCache: [String: String] = [:]
 
-    init(database: NotificationDatabase?, config: Config, onSave: @escaping (Config) -> Void) {
+    init(database: NotificationDatabase?, config: Config,
+         onSave: @escaping (Config) -> Void,
+         onTest: @escaping (NotificationRecord) -> Bool) {
         self.database = database
         self.config = config
         self.onSave = onSave
+        self.onTest = onTest
     }
 
     /// Persist the current config and notify the app (recreates the scanner).
@@ -112,6 +118,12 @@ final class ConfigModel: ObservableObject {
 
     func matches(_ record: NotificationRecord) -> Bool {
         SourceMatcher.match(record: record, sources: config.sources) != nil
+    }
+
+    /// Replay a watched notification through the real capture pipeline (banner + auto-copy + command),
+    /// exactly as if it had just arrived. Returns true if a code was detected and acted on.
+    func test(_ record: NotificationRecord) -> Bool {
+        onTest(record)
     }
 
     func appName(_ bundleID: String) -> String {

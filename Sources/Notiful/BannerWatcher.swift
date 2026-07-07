@@ -18,8 +18,9 @@ private func bannerAXCallback(observer: AXObserver,
 /// owned by the system "Notification Center" process; we observe it for newly created windows and
 /// pull out their static text.
 final class BannerWatcher {
-    /// Called with the banner's static-text lines and a closure that dismisses that banner.
-    private let onBanner: (_ texts: [String], _ dismiss: @escaping () -> Void) -> Void
+    /// Called with the banner's static-text lines (with their accessibility identifiers, e.g.
+    /// "title"/"subtitle"/"body") and a closure that dismisses that banner.
+    private let onBanner: (_ lines: [BannerFields.Line], _ dismiss: @escaping () -> Void) -> Void
 
     private var observer: AXObserver?
     private var appElement: AXUIElement?
@@ -27,7 +28,7 @@ final class BannerWatcher {
 
     private let bannerHostBundleID = "com.apple.notificationcenterui"
 
-    init(onBanner: @escaping (_ texts: [String], _ dismiss: @escaping () -> Void) -> Void) {
+    init(onBanner: @escaping (_ lines: [BannerFields.Line], _ dismiss: @escaping () -> Void) -> Void) {
         self.onBanner = onBanner
     }
 
@@ -82,9 +83,9 @@ final class BannerWatcher {
 
     /// Banner subtrees may populate a beat after creation, so retry briefly if empty.
     private func readBanner(_ element: AXUIElement, attempt: Int) {
-        var texts: [String] = []
-        collectStaticText(element, depth: 0, into: &texts)
-        if texts.isEmpty {
+        var lines: [BannerFields.Line] = []
+        collectStaticText(element, depth: 0, into: &lines)
+        if lines.isEmpty {
             if attempt < 3 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                     self?.readBanner(element, attempt: attempt + 1)
@@ -92,16 +93,21 @@ final class BannerWatcher {
             }
             return
         }
-        onBanner(texts) { [weak self] in self?.dismiss(element) }
+        onBanner(lines) { [weak self] in self?.dismiss(element) }
     }
 
     // MARK: - AX traversal
 
-    private func collectStaticText(_ element: AXUIElement, depth: Int, into out: inout [String]) {
+    private func collectStaticText(_ element: AXUIElement, depth: Int, into out: inout [BannerFields.Line]) {
         if depth > 12 || out.count > 60 { return }
         if let role = stringAttr(element, kAXRoleAttribute), role == (kAXStaticTextRole as String) {
             if let value = stringAttr(element, kAXValueAttribute), !value.isEmpty {
-                out.append(value)
+                let ident = stringAttr(element, kAXIdentifierAttribute)
+                out.append(BannerFields.Line(identifier: ident, value: value))
+                // Diagnostic: shows how macOS tagged each line (title/subtitle/body), for verifying
+                // field separation on new OS builds. Digits are masked so codes never leak.
+                let masked = String(value.map { $0.isNumber ? "•" : $0 })
+                NotifulLog.event("banner line [ident=\(ident ?? "-")] \(masked)")
             }
         }
         for child in childrenOf(element) {

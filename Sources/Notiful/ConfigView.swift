@@ -27,6 +27,7 @@ struct SourcesTab: View {
     @State private var selectedRecent: Int64?
     @State private var editorContext: EditorContext?
     @State private var removeIndex: Int?
+    @State private var noCodeAlert = false
 
     /// Sheet payload: nil index = append a new source, otherwise edit in place.
     struct EditorContext: Identifiable {
@@ -108,6 +109,11 @@ struct SourcesTab: View {
                 Text("Notiful will stop watching “\(model.config.sources[i].name)”. You can add it again later.")
             }
         }
+        .alert("No code detected", isPresented: $noCodeAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Notiful didn’t find a one-time code in this notification.")
+        }
     }
 
     private var selectedRecentRecord: NotificationRecord? {
@@ -141,12 +147,21 @@ struct SourcesTab: View {
 
             TableColumn("Watched") { row in
                 if model.matches(row.record) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                        .help("A watched source matches this notification")
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .help("A watched source matches this notification")
+                        Button {
+                            if !model.test(row.record) { noCodeAlert = true }
+                        } label: {
+                            Image(systemName: "play.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Replay this notification — banner and auto-copy, exactly as if it just arrived")
+                    }
                 }
             }
-            .width(min: 50, ideal: 56)
+            .width(min: 70, ideal: 90)
         }
         .overlay {
             if model.recent.isEmpty {
